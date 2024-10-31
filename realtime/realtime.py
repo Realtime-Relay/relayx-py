@@ -34,16 +34,20 @@ class RealTime:
 
     @classmethod
     def init(cls, api_key=None):
+        # Instantiates the class
         return cls(api_key)
 
     def debug_mode(self, debug):
+        # Shows more debug logs
         self.debug = debug
 
     def __print(self, msg):
+        # Prints debug only logs
         if self.debug:
             print(msg)
 
     def connect(self):
+        # Connect to WS server on a different thread
         def run():
             # Define the WebSocket URL
             url = "ws://127.0.0.1:5000/ws/test-socket"  # Replace with your WebSocket URL
@@ -53,7 +57,9 @@ class RealTime:
 
                 data = json.loads(message)
 
+                # Process messages based on "type"
                 if data["type"] == TOPIC_INIT_INFO:
+                    # Status of the attempt to join a topic
                     if data["status"] == "JOINED":
                         self.__dispatch_topic_message(
                             data["topic"],
@@ -66,7 +72,9 @@ class RealTime:
                             channel.JOIN_FAILURE,
                             None
                         )
+                # received message from topic
                 elif data["type"] == TOPIC_MESSAGE:
+                    # Send to decorated method
                     self.__dispatch_topic_message(
                         data["topic"],
                         channel.IN_CHANNEL,
@@ -84,15 +92,17 @@ class RealTime:
                 self.__print(close_msg)
                 self.__print(close_status_code)
 
+                # Send disconnect status to decorator method
                 self.__dispatch_connection_event("disconnect")
 
             def on_open(ws):
                 self.__print("Authentication successful")
                 self.__print(self.__event_func)
 
-                # Resetting flag
+                # Reset flag
                 self.manual_disconnect = False
 
+                # Send connect status to decorator method
                 self.__dispatch_connection_event("connect")
 
                 # Join subscribed channels

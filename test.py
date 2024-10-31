@@ -1,4 +1,4 @@
-from realtime.realtime import RealTime, channel
+from realtime import RealTime, channel
 
 @RealTime.on("connect")
 def connection(status):

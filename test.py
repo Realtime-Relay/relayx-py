@@ -1,4 +1,7 @@
 from realtime import RealTime, channel
+import asyncio
+
+channel_init = False
 
 @RealTime.on("connect")
 def connection(status):
@@ -9,17 +12,30 @@ def connection(status):
 def disconnect(status):
     print(status)
 
-@RealTime.subscribe("test-topic")
 def test_topic(status, data):
     print(status)
 
     if status == channel.JOIN_SUCCESS:
-        real.publish("test-topic", {
-            "data": "heyo!"
-        })
+        channel_init = True
     
     if data:
         print(data)
 
 real = RealTime.init("hUaof9h9.cI1HYO2MxrQmrkAX2M2IvsN79Zf7hWso")
+real.debug_mode(True)
 real.connect()
+
+topic = input("Enter topic name: ")
+
+if topic != "":
+    RealTime.subscribe(topic)(test_topic)
+    real.join(topic)
+else:
+    topic = "test-topic"
+
+while True:
+    message = input("Enter Message: ")
+    
+    real.publish(topic, {
+        "data": message
+    })

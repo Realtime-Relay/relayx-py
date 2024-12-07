@@ -1,2 +1,1 @@
-from .realtime import RealTime
-from .realtime import channel, connection
+from .realtime import Realtime

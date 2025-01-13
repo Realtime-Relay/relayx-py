@@ -2,14 +2,12 @@ from realtime import Realtime
 import asyncio
 import sys
 
-realtime = Realtime("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyIjoiQXJqdW4iLCJwcm9qZWN0X2lkIjoidGVzdF9wcm9qZWN0Iiwib3JnYW5pemF0aW9uIjoiYmV5b25kX3JvYml0aWNzIiwiaXNfdmFsaWQiOnRydWUsImlhdCI6MTczMDczNTUzOX0.AMkp492uQC0BgPjcA3cy8FId9gGw8nHyZHDK5o3MyMk")
-realtime.init(staging=False, opts={
-    "debug": True
+realtime = Realtime({
+    "api_key": "eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJhdWQiOiJOQVRTIiwibmFtZSI6IkRyYWdvbiBQcm9ncmFtIiwic3ViIjoiVUNUSENDVjM2WjM0SzJFTUc0Q1BFSEhGTU1LUzVTS1dLUFNFWlo0REVMUU9IT0lOT1dDVVROSFAiLCJuYXRzIjp7ImRhdGEiOi0xLCJwYXlsb2FkIjotMSwic3VicyI6LTEsInB1YiI6eyJkZW55IjpbIj4iXX0sInN1YiI6eyJkZW55IjpbIj4iXX0sIm9yZ19kYXRhIjp7Im9yZ2FuaXphdGlvbiI6InN0b2tlLXNwYWNlIiwicHJvamVjdCI6IkRyYWdvbiBQcm9ncmFtIn0sImlzc3Vlcl9hY2NvdW50IjoiQUNaSUpaQ0lYU1NVVTU1WUVHTVAyMzZNSkkyQ1JJUkZGR0lENEpWUTZXUVlaVVdLTzJVN1k0QkIiLCJ0eXBlIjoidXNlciIsInZlcnNpb24iOjJ9LCJpc3MiOiJBQ1pJSlpDSVhTU1VVNTVZRUdNUDIzNk1KSTJDUklSRkZHSUQ0SlZRNldRWVpVV0tPMlU3WTRCQiIsImlhdCI6MTczNjY4OTExMSwianRpIjoiZm1CV3hCeS9XZmRKUmY5R0dKSkx0WGVDWVZCTm1jTlFSdTY5TWJOZkV1d1dyMnVXbkJ6b2tBQXQ4dzc5SkdXNnRZcjlvWCtCd1FJMUdDQVZaVUlNNVE9PSJ9.N8Na4AlrYehCoEzxAPZ8AgjdsQyyDibjr80q3yKKWZl2wJr_YYS89xwsjtqsF6hHXBjzm6rQxRQ-_7-TID1dDw",
+    "secret": "SUANGKH2E2NOWYQ5MVPAUHOOE3EVZOMMIQCHGJ4LKGUHOBUNGG2LAMNTRU"
 })
-
-realtime.set_user({
-    "user": "Python User",
-    "id": 567
+realtime.init(staging=True, opts={
+    "debug": True
 })
 
 @Realtime.on("hello")
@@ -28,21 +26,25 @@ def on_reconnect(data):
 def on_reconnect(data):
     print(f"[IMPL] => MESSAGE RESEND {data}")
 
-realtime.connect()
 
-text = ""
+async def main():
+    text = ""
+    
+    await realtime.connect()
 
-while text != "exit":
-    text = input("Enter message: ")
+    while text != "exit":
+        text = input("Enter message: ")
 
-    if text == "exit":
-        sys.exit(0)
-    elif text == "off":
-        realtime.off("hello")
-    else:
-        ack = realtime.publish("hello", {
-            "message": text
-        })
+        if text == "exit":
+            sys.exit(0)
+        elif text == "off":
+            realtime.off("hello")
+        else:
+            ack = await realtime.publish("hello", {
+                "message": text
+            })
 
-        print(f"PUBLISH RESPONSE => {ack}")
+            print(f"PUBLISH RESPONSE => {ack}")
+
+asyncio.run(main())
 

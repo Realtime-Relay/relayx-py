@@ -1,10 +1,11 @@
-import socketio
-import requests
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, UTC
 import asyncio
 import threading
+import nats
+import nats.js.api as nats_config
+import json
 
 class Realtime:
     __event_func = {}
@@ -15,154 +16,182 @@ class Realtime:
     MESSAGE_RESEND = "MESSAGE_RESEND"
     DISCONNECTED = "DISCONNECTED"
 
-    __room_key_events = [
-        "connect", "room-message", "room-join", "disconnect", "ping",
-        "reconnect_attempt", "reconnect_failed", "room-message-ack",
-        "exit-room", "relay-to-room", "enter-room", "set-user"
-    ]
-
     # Private status messages
     __RECONNECTING = "RECONNECTING"
     __RECONNECTED = "RECONNECTED"
     __RECONN_FAIL = "RECONN_FAIL"
 
-    def __init__(self, api_key):
-        self.api_key = api_key
+    __natsClient = None
+    __jetstream = None
+    __jsManager = None
+    __consumerMap = {}
+
+    __reconnected = False
+    __disconnected = True
+    __reconnecting = False
+    __connected = False
+    __reconnected_attempt = False
+
+    __offlineMessageBuffer = []
+
+    def __init__(self, config=None):
+        if config is not None:
+            if type(config) is not dict:
+                raise ValueError("Realtime($config). $config not object => {}")
+
+            if "api_key" in config:
+                self.api_key = config["api_key"]
+
+                if type(self.api_key) is not str:
+                    raise ValueError("api_key value must be a string")
+                
+                if self.api_key == "":
+                    raise ValueError("api_key value must not be an empty string")
+            else:
+                raise ValueError("api_key value not found in config object")
+            
+            if "secret" in config:
+                self.secret = config["secret"]
+
+                if type(self.secret) is not str:
+                    raise ValueError("secret value must be a string")
+                
+                if self.secret == "":
+                    raise ValueError("secret value must not be an empty string")
+            else:
+                raise ValueError("secret value not found in config object")
+        else:
+            raise ValueError("Realtime($config). $config is None")
+
         self.__namespace = ""
-        self.__base_url = ""
-        self.__reconnected_attempt = False
-        self.__disconnected = True
-        self.__debug = False
-        self.__offline_message_buffer = []
-        self.__manual_disconnect = False
-        self.opts = None
 
-        self.__sio = socketio.Client(serializer='msgpack', reconnection=True, reconnection_attempts=240, reconnection_delay_max=500)
-
-        self.__max_publish_retries = 5
-        self.__timeout = 1000
-
-        self.user = None
+        with open("user.creds", "w") as file:
+            file.write(self.__getCreds())
+            file.close()
+        
 
     def init(self, staging=False, opts=None):
-        self.__debug = opts["debug"]
+        """
+        Initializes library with configuration options.
+        """
+
+        self.staging = staging
         self.opts = opts
 
-        self.__base_url = "http://localhost:3000" if staging else "http://128.199.176.185:3000"
-        
-        self.__log(f"Base URL: {self.__base_url}")
-        
-        if self.api_key:
-            self.__namespace = self.__get_namespace()
+        if opts:
+            if "debug" in opts:
+                self.__debug = opts["debug"]
+            else:
+                self.__debug = False
         else:
-            raise ValueError("API key is not provided")
+            self.__debug = False
 
-    def __get_namespace(self):
+        self.__base_url = [
+            "nats://0.0.0.0:4221",
+            "nats://0.0.0.0:4222",
+            "nats://0.0.0.0:4223",
+            "nats://0.0.0.0:4224",
+            "nats://0.0.0.0:4225",
+            "nats://0.0.0.0:4226",
+        ] if staging else [
+            "nats://api.relay-x.io:4221",
+            "nats://api.relay-x.io:4222",
+            "nats://api.relay-x.io:4223",
+            "nats://api.relay-x.io:4224",
+            "nats://api.relay-x.io:4225",
+            "nats://api.relay-x.io:4226",
+        ]
+
+    async def __get_namespace(self):
         """
-        Gets the __namespace of the user using a REST API.
-
-        Returns:
-            bool: namespace str if successful, None otherwise.
+        Gets the __namespace of the user using a service
         """
-        start_time = datetime.now()
-        url = f"{self.__base_url}/get-namespace"
+
+        encoded = self.__encode_json({
+            "api_key": self.api_key
+        })
+
+        response = None
+        try:
+            response = await self.__natsClient.request("accounts.user.get_namespace", encoded, timeout=5)
+        except Exception as e:
+            self.__log(f"Error getting namespace: {e}")
+            response = None
         
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        response = requests.get(url, headers=headers)
-        
-        res = response.json()
-
-        if response.status_code == 200 and res["status"] == "SUCCESS":
-            # Log response time asynchronously
-            self.__run_async(self.__log_rest_response_time, start_time, "/get-namespace")
-
-            return res["data"]["namespace"]
-        return None
-
-    def __log(self, msg):
-        if self.__debug:
-            print(msg)  # Replace with a logging system if necessary
-
-    def sleep(self, seconds):
-        time.sleep(seconds)
-
-    def connect(self):
-        def __connect():
-            self.__sio.on("connect", handler=self.on_connect, namespace=f"/{self.__namespace}")
-            self.__sio.on("room-message", handler=self.on_room_message, namespace=f"/{self.__namespace}")
-            self.__sio.on("room-join", handler=self.on_room_join, namespace=f"/{self.__namespace}")
-            self.__sio.on("disconnect", handler=self.on_disconnect, namespace=f"/{self.__namespace}")
+        if response:
+            resp_data = response.data.decode('utf-8')
+            resp_data = json.loads(resp_data)
             
-            self.__sio.connect(self.__base_url, namespaces=f"/{self.__namespace}", auth={
-                "api-key": self.api_key
-            })
-            self.__sio.wait()
+            if resp_data["status"] == "NAMESPACE_RETRIEVE_SUCCESS":
+                self.__namespace = resp_data["data"]["namespace"]
+            else:
+                raise ValueError("Namespace not found")
+        else:
+            raise ValueError("Namespace not found")
 
-            # This lines execute when the reconnection fails or when the the user calls close()
-            self.__log("Reconnection fail or connection closed by user")
+    async def connect(self):
+        async def __connect():
+            options = {
+                "servers": self.__base_url,
+                "no_echo": True,
+                "max_reconnect_attempts": 1200,
+                "reconnect_time_wait": 1,
+                # "reconnect": True,
+                "token": self.api_key,
+                "user_credentials": "user.creds",
+                "reconnected_cb": self.__on_reconnect,
+                "disconnected_cb": self.__on_disconnect,
+                "error_cb": self.__on_error,
+                "closed_cb": self.__on_closed
+            }
 
-            if self.__reconnected_attempt:
-                # this reconnection attempt failed
-                self.__on_reconnect_failed()
+            self.__natsClient = await nats.connect(**options)
+            self.__jetstream = self.__natsClient.jetstream()
+            self.__log("Connected to Relay!")
+
+            self.__connected = True
+            self.__disconnected = False
+
+            await self.__get_namespace()
+
+            # Call the callback function if present
+            if self.CONNECTED in self.__event_func:
+                if self.__event_func[self.CONNECTED]:
+                    self.__event_func[self.CONNECTED]()
+
+            await self.__subscribe_to_topics()
+
+            if not self.__reconnecting:
+                # Execute on first time connection
+                self.__log("Reconnection attempt not in progress")
+            else:
+                self.__on_reconnect()
 
         self.__run_async(__connect)
 
-    def on_connect(self):
-        self.__log(f"Connected with ID: {self.__sio.sid}")
-
-        # Call callback function if present
-        if self.CONNECTED in self.__event_func:
-            if self.__event_func[self.CONNECTED]:
-                self.__event_func[self.CONNECTED]()
-
-        self.__disconnected = False
-
-        if not self.__reconnected_attempt:
-            # Execute on first time connection
-            self.__retry_till_success(self.__set_remote_user, 5, 1)
-            self.__subscribe_to_topics()
-        else:
-            self.__on_reconnect()
-
-    def on_room_message(self, data, data2):
-        self.__log(f"Received room message: {data}")
-
-        room = data.get("room")
-        if room in self.__event_func:
-            self.__event_func[room]({
-                "id": data.get("id"),
-                "data": data.get("data")
-            })
-
-    def on_room_join(self, data, data2):
-        room = data.get("room")
-        event = data.get("event")
-
-        if room in self.__event_func:
-            self.__event_func[room](event)
-
-    def on_disconnect(self):
+    async def __on_disconnect(self):
         self.__log("Disconnected from server")
         self.__disconnected = True
+        self.__consumerMap.clear()
+        self.__connected = False
+
+        if self.DISCONNECTED in self.__event_func:
+            self.__event_func[self.DISCONNECTED]()
 
         if not self.__manual_disconnect:
             # This was not a manual disconnect.
             # Reconnection attempts will be made
             self.__on_reconnect_attempt()
 
-    def __on_reconnect(self):
+    async def __on_reconnect(self):
         self.__log("Reconnected!")
-        self.__disconnected = False
-        self.__reconnected_attempt = False
+        self.__reconnecting = False
+        self.__connected = True
+
+        await self.__subscribe_to_topics()
 
         if self.RECONNECT in self.__event_func:
             self.__event_func[self.RECONNECT](self.__RECONNECTED)
-
-        # Set remote user data again
-        self.__retry_till_success(self.__set_remote_user, 5, 1)
-
-        # Rejoin rooms
-        self.__rejoin_rooms()
 
         # Publish messages issued when client was in reconnection state
         output = self.__publish_messages_on_reconnect()
@@ -171,10 +200,16 @@ class Realtime:
             if self.MESSAGE_RESEND in self.__event_func:
                 self.__event_func[self.MESSAGE_RESEND](output)
 
+    async def __on_error(self, e):
+        self.__log(f"There was an error: {e}")
+
+    async def __on_closed(self):
+        self.__log("Connection is closed")
+
     def __on_reconnect_attempt(self):
         self.__log(f"Reconnection attempt underway...")
 
-        self.__reconnected_attempt = True
+        self.__reconnecting = True
 
         if self.RECONNECT in self.__event_func:
             self.__event_func[self.RECONNECT](self.__RECONNECTING)
@@ -189,134 +224,69 @@ class Realtime:
 
         self.__offline_message_buffer.clear()
 
-    def set_user(self, user):
-        self.user = user
+    def close(self):
+        """
+        Closes connection to server
+        """
+        if self.__natsClient != None:
+            self.__reconnected = False
+            self.__disconnected = True
 
-    def get_user(self):
-        return self.user if self.user else None
+            self.__manual_disconnect = True
 
-    def __set_remote_user(self):
-        user_data = self.get_user()
-        self.__log(user_data)
-
-        if user_data:
-            response = self.__emitWithAck("set-user", {"user_data": user_data})
+            self.__natsClient.close()
         else:
-            response = None
-            self.__log("No user object found, skipping setting user")
+            self.__manual_disconnect = False
 
-        success = response != None and response["status"] == "USER_RECIEVED_ACK"
+            self.__log("None / null socket object, cannot close connection")
 
-        return {
-            "success": success,
-            "output": success
-        }
+    async def publish(self, topic, data):
+        if topic == None:
+            raise ValueError("$topic cannot be None.")
+        
+        if topic == "":
+            raise ValueError("$topic cannot be an empty string.")
+        
+        if not isinstance(topic, str):
+            raise ValueError("$topic must be a string.")
+        
+        if not self.__is_topic_valid(topic):
+            raise ValueError("$topic is not valid, use __is_topic_valid($topic) to validate topic")
 
-    def publish(self, topic, data):
         message_id = str(uuid.uuid4())
 
-        if self.__sio.connected:
-            max_retries = self.__get_publish_retry()
+        message = {
+            "client_id": self.__get_client_id(),
+            "id": message_id,
+            "room": topic,
+            "message": data,
+            "start": int(datetime.now(UTC).timestamp())
+        }
 
-            return self.__retry_till_success(self.__publish, max_retries, 1, message_id, topic, data)
+        encoded = self.__encode_json(message)
+
+        if self.__connected:
+            if topic not in self.__topic_map:
+                self.__topic_map.append(topic)
+
+                await self.__start_or_get_stream()
+            else:
+                self.__log(f"{topic} exitsts locally, moving on...")
+
+            topic = self.__get_stream_topic(topic)
+            self.__log(f"Publishing to topic => {self.__get_stream_topic(topic)}")
+            
+            ack = await self.__jetstream.publish(topic, encoded)
+            self.__log(f"Publish ack => {ack}")
+
+            return ack != None
         else:
             self.__offline_message_buffer.append({
-                "id": message_id,
-                "room": topic,
-                "data": data
-            })
-
-            return {
-                "message": {
-                    "id": message_id,
-                    "topic": topic,
-                    "message": data
-                },
-                "status": "PUBLISH_FAIL_TO_SEND",
-                "sent": False,
-                "connected": False
-            }
-
-    def __publish(self, message_id, topic, data):
-        subscribed = False
-        success = False
-        err = None
-
-        if not topic:
-            return {
-                "success": False,
-                "output": {
-                    "status": "PUBLISH_INPUT_ERR", 
-                    "sent": False,
-                    "connected": self.__sio.connected,
-                    "message": f"topic is ${topic} || data is ${data}"
-                }
-            }
-
-        process_start = datetime.now()
-
-        if topic not in self.__topic_map:
-            subscribed = self.__retry_till_success(self.__create_or_join_room, 5, 1, topic)
-        else:
-            subscribed = True
-        
-        self.__run_async(self.__log_socket_response_time, process_start, {
-            "type": "topic_subscribe_only"
-        })
-        
-        if subscribed:
-            start = datetime.now()
-
-            response = self.__emitWithAck("relay-to-room", {
-                "id": message_id,
-                "room": topic,
+                "topic": topic,
                 "message": data
             })
 
-            response["message"] = {
-                "id": message_id,
-                "room": topic,
-                "message": data
-            }
-            response["sent"] = response["status"] == "ACK_SUCCESS"
-            response["connected"] = self.__sio.connected
-
-            self.__run_async(self.__log_socket_response_time, start, {
-                "type": "publish_only"
-            })
-
-            success = True
-        else:
-            self.__log("Unable to send message, topic not subscribed to")
-
-            response = {
-                "message": {
-                    "id": id,
-                    "topic": topic,
-                    "message": data
-                },
-                "status": "PUBLISH_FAIL_TO_SEND",
-                "sent": False,
-                "connected": self.__sio.connected,
-                "message": f"Unable to subscribe to topic ${topic}"
-            }
-
-            err = response["message"]
-
-            success = False
-        
-        self.__run_async(self.__log_socket_response_time, process_start, {
-            "type": "publish_full", # TODO: Document
-            "status": response["status"],
-            "sent": response["sent"],
-            "connected": response["connected"],
-            "err": err
-        })
-
-        return {
-            "success": success,
-            "output": response
-        }
+            return False
 
     @classmethod
     def on(cls, topic):
@@ -331,115 +301,134 @@ class Realtime:
             bool: True if successfully registered, False otherwise.
         """
         def wrapper(func):
+            if topic == None:
+                raise ValueError("$topic cannot be None.")
+            
+            if func == None:
+                raise ValueError("$func cannot be None.")
+
             if not callable(func):
                 raise ValueError("The callback must be a callable function.")
             
             if not isinstance(topic, str):
                 raise ValueError("The topic must be a string.")
             
-            if topic not in cls.__room_key_events:
+            if topic not in cls.__event_func:
                 cls.__event_func[topic] = func
 
-                __temp_topic_map = cls.__topic_map.copy()
-                __temp_topic_map += [cls.CONNECTED, cls.DISCONNECTED, cls.RECONNECT, cls.__RECONNECTED, 
-                                     cls.__RECONNECTING, cls.__RECONN_FAIL, cls.MESSAGE_RESEND]
+            __temp_topic_map = cls.__topic_map.copy()
+            __temp_topic_map += [cls.CONNECTED, cls.DISCONNECTED, cls.RECONNECT, cls.__RECONNECTED, 
+                                    cls.__RECONNECTING, cls.__RECONN_FAIL, cls.MESSAGE_RESEND]
 
-                if topic not in __temp_topic_map:
-                    cls.__topic_map.append(topic)
-                
-                return True
+            if topic not in __temp_topic_map:
+                cls.__topic_map.append(topic)
+
+            if cls.__connected:
+                cls.__start_consumer(topic)
             
-            return False
+            return True
         
         return wrapper
 
-    def off(self, topic):
-        return self.__retry_till_success(self.__off, 5, 1, topic)
+    async def off(self, topic):
+        """
+        Unregisters a callback function for a given topic or event.
 
-    def __off(self, topic):
-        success = False
-        response = None
+        Args:
+            topic (str): The topic or event name.
 
-        start_time = datetime.now()
+        Returns:
+            bool: True if successfully unregistered, False otherwise.
+        """
 
-        if not topic:
-            return {
-                "success": True,
-                "output": {
-                    "status": "TOPIC_EXIT",
-                    "exit": False,
-                    "message": f"topic is {topic}"
-                }
-            }
-
-        if topic in self.__topic_map:
-            response = self.__emitWithAck("exit-room", {
-                "room": topic
-            })
-        else:
-            response = {
-                "status": "TOPIC_EXIT",
-                "exit": True
-            }
+        if topic == None:
+            raise ValueError("$topic cannot be None.")
         
-        self.__topic_map.remove(topic)
-        success = True
+        if not isinstance(topic, str):
+                raise ValueError("The topic must be a string.")
 
-        self.__run_async(self.__log_socket_response_time, start_time, {
-            "type": "topic_unsubscribe", # TODO: Document
-            "status": response["status"],
-            "room": topic
-        })
+        if topic in self.__event_func:
+            self.__event_func.pop(topic)
+            self.__topic_map.remove(topic)
 
-        return {
-            "success": success,
-            "output": response
-        }
+            return await self.__delete_consumer(topic)
+        else:
+            return False
 
-    def __create_or_join_room(self, topic):
-        start_time = datetime.now()
-        err = None
-        subscribed = False
+    def __delete_consumer(self, topic):
+        return True
+
+    async def __subscribe_to_topics(self):
+        for topic in self.__topic_map:
+            await self.__start_consumer(topic)
+
+    async def __start_consumer(self, topic):
+        self.__log(f"Starting consumer for {int(datetime.now(UTC).timestamp())}")
+        
+        def on_message(msg):
+            data = json.loads(msg.data.decode('utf-8'))
+            self.__log(f"Received message => {data}")
+
+            msg.ack()
+
+            if topic in self.__event_func:
+                self.__event_func[topic](data)
+
+        await self.__start_or_get_stream()
+
+        await self.__jetstream.subscribe(self.__get_stream_topic(topic), cb=on_message, config=nats_config.ConsumerConfig(
+            name=self.__get_stream_topic(topic),
+            filter_subject=[self.__get_stream_topic(topic), self.__get_stream_topic(topic) + "_presence"],
+            replay_policy=nats_config.ReplayPolicy.INSTANT,
+            deliver_policy=nats_config.DeliverPolicy.NEW,
+            ack_policy=nats_config.AckPolicy.EXPLICIT
+        ))
+        
+
+    async def __start_or_get_stream(self):
+        stream_name = self.__get_stream_name()
+        subs = self.__get_stream_topic_list()
 
         try:
-            if topic in self.__room_key_events:
-                err = f"Reserved topic name: {topic}"
-                raise ValueError(err)
-            
-            response = self.__emitWithAck("enter-room", {"room": topic})
-
-            status = response["status"]
-            
-            if status == "JOINED_ROOM" or status == "ROOM_CREATED" or status == "ALREADY_IN_ROOM":
-                subscribed = True
-            else:
-                subscribed = False
+            stream = await self.__jetstream.stream_info(name=stream_name)
         except Exception as e:
-            subscribed = False
+            self.__log(f"Stream not found: {e}")
+            stream = None
 
-            self.__log(e)
+        self.__log(f"Stream => {stream.config.subjects}")
 
-            response = {
-                "status": "ROOM_JOIN_ERR",
-                "err": e
-            }
+        if stream == None:
+            await self.__jetstream.add_stream(name=stream_name,
+                                              subjects=subs,)
 
-        self.__run_async(self.__log_socket_response_time, start_time, {
-            "type": "create_or_join_room",
-            "status": response["status"],
-            "err": err
-        })
+            self.__log(f"Stream Created => {stream_name}")
+        else:
+            # Getting unique subjects from the stream
+            fSubs = stream.config.subjects + subs + self.__get_stream_topic_presence_list()
+            fSubs = list(set(fSubs))
 
-        self.__log({
-            "success": subscribed,
-            "output": subscribed
-        })
+            resp = await self.__jetstream.update_stream(nats_config.StreamConfig(name=stream_name, subjects=fSubs))
 
-        return {
-            "success": subscribed,
-            "output": subscribed
-        }
+            self.__log(f"{stream_name} exists locally, updating and moving on...")
 
+    # Utility functions
+    def __is_topic_valid(self, topic):
+        if topic != None and isinstance(topic, str):
+            return topic not in [
+                self.CONNECTED,
+                self.RECONNECT,
+                self.MESSAGE_RESEND,
+                self.DISCONNECTED,
+                self.__RECONNECTED,
+                self.__RECONNECTING,
+                self.__RECONN_FAIL
+            ]
+        else:
+            return False
+        
+    def __get_client_id(self):
+        return self.__natsClient.client_id
+    
     def __retry_till_success(self, func, retries, delay, *args):
         method_output = None
         success = False
@@ -465,33 +454,6 @@ class Realtime:
     
         return method_output
 
-    def __subscribe_to_topics(self):
-        for topic in self.__topic_map:
-            subscribed = self.__retry_till_success(self.__create_or_join_room, 5, 1, topic)
-
-            if not subscribed:
-                self.__event_func[topic]({
-                    "status": "TOPIC_SUBSCRIBE",
-                    "subscribed": False
-                })
-
-    def __rejoin_rooms(self):
-        for topic in self.__topic_map:
-            start_time = datetime.now()
-
-            subscribed = self.__retry_till_success(self.__create_or_join_room, 5, 1, topic)
-
-            self.__event_func[topic]({
-                "type": "RECONNECTION_STATUS",
-                "initialized_topic": subscribed
-            })
-
-            self.__run_async(self.__log_socket_response_time, start_time, {
-                "type": "rejoin_room", # TODO: Document
-                "room": topic,
-                "subscribed": subscribed
-            })
-
     def __publish_messages_on_reconnect(self):
         message_sent_status = []
 
@@ -501,10 +463,6 @@ class Realtime:
             max_retries = self.__get_publish_retry()
             output = self.__retry_till_success(self.__publish, max_retries, 1, message["id"], message["room"], message["data"])
 
-            self.__run_async(self.__log_socket_response_time, start_time, {
-                "type": "publish_retry_on_connect"
-            })
-
             message_sent_status.append(output)
 
         self.__offline_message_buffer.clear()
@@ -513,42 +471,35 @@ class Realtime:
 
     def is_topic_valid(self, topic):
         return topic in self.__room_key_events
-
-    def close(self):
-        """
-        Closes connection to server
-        """
-        if self.__sio.connected:
-            self.__reconnected_attempt = False
-            self.__disconnected = True
-
-            self.__manual_disconnect = True
-
-            self.__sio.shutdown()
+    
+    def encode_json(self, data):
+        return json.dumps(data).encode('utf-8')
+    
+    def __get_stream_name(self):
+        if self.__namespace:
+            return f"{self.__namespace}_stream"
         else:
-            self.__manual_disconnect = False
+            self.close()
+            raise ValueError("$namespace is None, Cannot initialize program with None $namespace")
+    
+    def __get_stream_topic(self, topic):
+        return f"{self.__get_stream_name()}_{topic}"
+    
+    def __get_stream_topic_list(self):
+        topics = []
 
-            self.__log("None / null socket object, cannot close connection")
+        for topic in self.__topic_map:
+            topics.append(self.__get_stream_topic(topic))
 
-    # Utility functions
-    def __emitWithAck(self, event, data):
-        ackData = None
+        return topics
+    
+    def __get_stream_topic_presence_list(self):
+        topics = []
 
-        event_set = threading.Event()
+        for topic in self.__topic_map:
+            topics.append(self.__get_stream_topic(topic) + "_presence")
 
-        def ack(data):
-            nonlocal ackData
-            nonlocal event_set
-
-            ackData = data
-            event_set.set()
-        
-        self.__sio.emit(event, data, namespace=f"/{self.__namespace}", callback=ack)
-        event_set.wait()
-
-        self.__log(f"ACK_DATA => {ackData}")
-
-        return ackData
+        return topics
 
     def __get_publish_retry(self):
         max_retries = 0
@@ -567,30 +518,29 @@ class Realtime:
         thread = threading.Thread(target=func, args=args)
         thread.start()
 
-    def __log_rest_response_time(self, start_time, url_part):
-        end = datetime.now()
-        response_time = (end - start_time).total_seconds() * 1000
+    def __encode_json(self, data):
+        return json.dumps(data).encode('utf-8')
 
-        url = f"{self.__base_url}/metrics/log"
-        
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        response = requests.post(url, headers=headers, json={
-            "url": url_part,
-            "response_time": response_time
-        })
+    def __log(self, msg):
+        if self.__debug:
+            print(msg)  # Replace with a logging system if necessary
 
-        self.__log(response.json())
+    def sleep(self, seconds):
+        time.sleep(seconds)
 
-    def __log_socket_response_time(self, start_time, data):
-        end = datetime.now()
-        response_time = (end - start_time).total_seconds() * 1000
+    def __getCreds(self):
+        return f"""
+-----BEGIN NATS USER JWT-----
+{self.api_key}
+------END NATS USER JWT------
 
-        url = f"{self.__base_url}/metrics/log"
-        
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        response = requests.post(url, headers=headers, json={
-            "data": data,
-            "response_time": response_time
-        })
+************************* IMPORTANT *************************
+NKEY Seed printed below can be used to sign and prove identity.
+NKEYs are sensitive and should be treated as secrets.
 
-        self.__log(response.json())
+-----BEGIN USER NKEY SEED-----
+{self.secret}
+------END USER NKEY SEED------
+
+*************************************************************
+        """

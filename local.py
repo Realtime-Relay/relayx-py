@@ -1,46 +1,62 @@
 from realtime import Realtime
 import asyncio
 import sys
+import json
+import os
 
 realtime = Realtime({
-    "api_key": "eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJhdWQiOiJOQVRTIiwibmFtZSI6IkRyYWdvbiBQcm9ncmFtIiwic3ViIjoiVUNUSENDVjM2WjM0SzJFTUc0Q1BFSEhGTU1LUzVTS1dLUFNFWlo0REVMUU9IT0lOT1dDVVROSFAiLCJuYXRzIjp7ImRhdGEiOi0xLCJwYXlsb2FkIjotMSwic3VicyI6LTEsInB1YiI6eyJkZW55IjpbIj4iXX0sInN1YiI6eyJkZW55IjpbIj4iXX0sIm9yZ19kYXRhIjp7Im9yZ2FuaXphdGlvbiI6InN0b2tlLXNwYWNlIiwicHJvamVjdCI6IkRyYWdvbiBQcm9ncmFtIn0sImlzc3Vlcl9hY2NvdW50IjoiQUNaSUpaQ0lYU1NVVTU1WUVHTVAyMzZNSkkyQ1JJUkZGR0lENEpWUTZXUVlaVVdLTzJVN1k0QkIiLCJ0eXBlIjoidXNlciIsInZlcnNpb24iOjJ9LCJpc3MiOiJBQ1pJSlpDSVhTU1VVNTVZRUdNUDIzNk1KSTJDUklSRkZHSUQ0SlZRNldRWVpVV0tPMlU3WTRCQiIsImlhdCI6MTczNjY4OTExMSwianRpIjoiZm1CV3hCeS9XZmRKUmY5R0dKSkx0WGVDWVZCTm1jTlFSdTY5TWJOZkV1d1dyMnVXbkJ6b2tBQXQ4dzc5SkdXNnRZcjlvWCtCd1FJMUdDQVZaVUlNNVE9PSJ9.N8Na4AlrYehCoEzxAPZ8AgjdsQyyDibjr80q3yKKWZl2wJr_YYS89xwsjtqsF6hHXBjzm6rQxRQ-_7-TID1dDw",
-    "secret": "SUANGKH2E2NOWYQ5MVPAUHOOE3EVZOMMIQCHGJ4LKGUHOBUNGG2LAMNTRU"
+    "api_key": os.getenv("api_key", None),
+    "secret": os.getenv("secret", None)
 })
 realtime.init(staging=True, opts={
     "debug": True
 })
 
-@Realtime.on("hello")
-def onHello(data):
-    print(data)
+async def onHello(data):
+    print(json.dumps(data, indent=4))
 
-@Realtime.on(Realtime.CONNECTED)
 def onConnect():
     print("[IMPL] Connected!")
 
-@Realtime.on(Realtime.RECONNECT)
 def on_reconnect(data):
     print(f"[IMPL] => onReconnect {data}")
 
-@Realtime.on(Realtime.MESSAGE_RESEND)
-def on_reconnect(data):
+def on_message_resend(data):
     print(f"[IMPL] => MESSAGE RESEND {data}")
 
+def generic_handler(data):
+    print(f"[IMPL] => Generic Handler {data}")
 
 async def main():
     text = ""
-    
+
+    await realtime.on("hello", onHello)
+    await realtime.on(Realtime.CONNECTED, onConnect)
+    await realtime.on(Realtime.RECONNECT, on_reconnect)
+    await realtime.on(Realtime.MESSAGE_RESEND, on_message_resend)
+
     await realtime.connect()
 
+    loop = asyncio.get_event_loop()
+
     while text != "exit":
-        text = input("Enter message: ")
+        text = await loop.run_in_executor(None, input, "Enter Message: ")
 
         if text == "exit":
             sys.exit(0)
         elif text == "off":
-            realtime.off("hello")
+            topic = await loop.run_in_executor(None, input, "Enter topic: ")
+            await realtime.off(topic)
+        elif text == "on":
+            topic = await loop.run_in_executor(None, input, "Enter topic: ")
+            await realtime.on(topic, generic_handler)
+        elif text == "close":
+            await realtime.close()
+        elif text == "init":
+            await realtime.connect()
         else:
-            ack = await realtime.publish("hello", {
+            topic = input("Enter topic: ")
+            ack = await realtime.publish(topic, {
                 "message": text
             })
 

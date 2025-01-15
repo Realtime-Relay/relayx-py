@@ -6,6 +6,9 @@ import threading
 import nats
 import nats.js.api as nats_config
 import json
+import re
+import inspect
+import numbers
 
 class Realtime:
     __event_func = {}
@@ -31,8 +34,9 @@ class Realtime:
     __reconnecting = False
     __connected = False
     __reconnected_attempt = False
+    __manual_disconnect = False
 
-    __offlineMessageBuffer = []
+    __offline_message_buffer = []
 
     def __init__(self, config=None):
         if config is not None:
@@ -136,7 +140,7 @@ class Realtime:
                 "no_echo": True,
                 "max_reconnect_attempts": 1200,
                 "reconnect_time_wait": 1,
-                # "reconnect": True,
+                "allow_reconnect": True,
                 "token": self.api_key,
                 "user_credentials": "user.creds",
                 "reconnected_cb": self.__on_reconnect,
@@ -154,20 +158,17 @@ class Realtime:
 
             await self.__get_namespace()
 
+            await self.__subscribe_to_topics()
+
             # Call the callback function if present
             if self.CONNECTED in self.__event_func:
                 if self.__event_func[self.CONNECTED]:
-                    self.__event_func[self.CONNECTED]()
+                    if inspect.iscoroutinefunction(self.__event_func[self.CONNECTED]):
+                        await self.__event_func[self.CONNECTED]()
+                    else:
+                        self.__event_func[self.CONNECTED]()
 
-            await self.__subscribe_to_topics()
-
-            if not self.__reconnecting:
-                # Execute on first time connection
-                self.__log("Reconnection attempt not in progress")
-            else:
-                self.__on_reconnect()
-
-        self.__run_async(__connect)
+        await self.__run_in_background(__connect)
 
     async def __on_disconnect(self):
         self.__log("Disconnected from server")
@@ -176,43 +177,64 @@ class Realtime:
         self.__connected = False
 
         if self.DISCONNECTED in self.__event_func:
-            self.__event_func[self.DISCONNECTED]()
+            if inspect.iscoroutinefunction(self.__event_func[self.DISCONNECTED]):
+                await self.__event_func[self.DISCONNECTED]()
+            else:
+                self.__event_func[self.DISCONNECTED]()
 
         if not self.__manual_disconnect:
             # This was not a manual disconnect.
             # Reconnection attempts will be made
-            self.__on_reconnect_attempt()
+            if inspect.iscoroutinefunction(self.__on_reconnect_attempt):
+                await self.__on_reconnect_attempt()
+            else:
+                self.__on_reconnect_attempt()
 
     async def __on_reconnect(self):
         self.__log("Reconnected!")
         self.__reconnecting = False
         self.__connected = True
 
-        await self.__subscribe_to_topics()
-
         if self.RECONNECT in self.__event_func:
-            self.__event_func[self.RECONNECT](self.__RECONNECTED)
+            if inspect.iscoroutinefunction(self.__event_func[self.RECONNECT]):
+                await self.__event_func[self.RECONNECT](self.__RECONNECTED)
+            else:
+                self.__event_func[self.RECONNECT](self.__RECONNECTED)
 
         # Publish messages issued when client was in reconnection state
-        output = self.__publish_messages_on_reconnect()
+        output = await self.__publish_messages_on_reconnect()
 
         if len(output) > 0:
             if self.MESSAGE_RESEND in self.__event_func:
-                self.__event_func[self.MESSAGE_RESEND](output)
+                if inspect.iscoroutinefunction(self.__event_func[self.MESSAGE_RESEND]):
+                    await self.__event_func[self.MESSAGE_RESEND](output)
+                else:
+                    self.__event_func[self.MESSAGE_RESEND](output)
 
     async def __on_error(self, e):
         self.__log(f"There was an error: {e}")
 
+        # Reconnecting error catch
+        if "[Errno 61]" in str(e):
+            if self.RECONNECT in self.__event_func:
+                if inspect.iscoroutinefunction(self.__event_func[self.RECONNECT]):
+                    await self.__event_func[self.RECONNECT](self.__RECONNECTING)
+                else:
+                    self.__event_func[self.RECONNECT](self.__RECONNECTING)
+
     async def __on_closed(self):
         self.__log("Connection is closed")
 
-    def __on_reconnect_attempt(self):
+    async def __on_reconnect_attempt(self):
         self.__log(f"Reconnection attempt underway...")
 
         self.__reconnecting = True
 
         if self.RECONNECT in self.__event_func:
-            self.__event_func[self.RECONNECT](self.__RECONNECTING)
+            if inspect.iscoroutinefunction(self.__event_func[self.RECONNECT]):
+                await self.__event_func[self.RECONNECT](self.__RECONNECTING)
+            else:
+                self.__event_func[self.RECONNECT](self.__RECONNECTING)
 
     def __on_reconnect_failed(self):
         self.__log("Reconnection failed")
@@ -224,7 +246,7 @@ class Realtime:
 
         self.__offline_message_buffer.clear()
 
-    def close(self):
+    async def close(self):
         """
         Closes connection to server
         """
@@ -234,7 +256,7 @@ class Realtime:
 
             self.__manual_disconnect = True
 
-            self.__natsClient.close()
+            await self.__natsClient.close()
         else:
             self.__manual_disconnect = False
 
@@ -250,22 +272,25 @@ class Realtime:
         if not isinstance(topic, str):
             raise ValueError("$topic must be a string.")
         
-        if not self.__is_topic_valid(topic):
-            raise ValueError("$topic is not valid, use __is_topic_valid($topic) to validate topic")
-
-        message_id = str(uuid.uuid4())
-
-        message = {
-            "client_id": self.__get_client_id(),
-            "id": message_id,
-            "room": topic,
-            "message": data,
-            "start": int(datetime.now(UTC).timestamp())
-        }
-
-        encoded = self.__encode_json(message)
+        if not self.is_topic_valid(topic):
+            raise ValueError("$topic is not valid, use is_topic_valid($topic) to validate topic")
+        
+        if data == None:
+            raise ValueError("$data cannot be None.")
 
         if self.__connected:
+            message_id = str(uuid.uuid4())
+
+            message = {
+                "client_id": self.__get_client_id(),
+                "id": message_id,
+                "room": topic,
+                "message": data,
+                "start": int(datetime.now(UTC).timestamp())
+            }
+
+            encoded = self.__encode_json(message)
+
             if topic not in self.__topic_map:
                 self.__topic_map.append(topic)
 
@@ -288,8 +313,7 @@ class Realtime:
 
             return False
 
-    @classmethod
-    def on(cls, topic):
+    async def on(self, topic, func):
         """
         Registers a callback function for a given topic or event.
 
@@ -300,35 +324,36 @@ class Realtime:
         Returns:
             bool: True if successfully registered, False otherwise.
         """
-        def wrapper(func):
-            if topic == None:
-                raise ValueError("$topic cannot be None.")
+        if topic == None:
+            raise ValueError("$topic cannot be None.")
             
-            if func == None:
-                raise ValueError("$func cannot be None.")
+        if not isinstance(topic, str):
+            raise ValueError("The topic must be a string.")
+        
+        if func == None:
+            raise ValueError("$func cannot be None.")
 
-            if not callable(func):
-                raise ValueError("The callback must be a callable function.")
-            
-            if not isinstance(topic, str):
-                raise ValueError("The topic must be a string.")
-            
-            if topic not in cls.__event_func:
-                cls.__event_func[topic] = func
-
-            __temp_topic_map = cls.__topic_map.copy()
-            __temp_topic_map += [cls.CONNECTED, cls.DISCONNECTED, cls.RECONNECT, cls.__RECONNECTED, 
-                                    cls.__RECONNECTING, cls.__RECONN_FAIL, cls.MESSAGE_RESEND]
+        if not callable(func):
+            raise ValueError("The callback must be a callable function.")
+        
+        if topic not in self.__event_func:
+            __temp_topic_map = self.__topic_map.copy()
+            __temp_topic_map += [self.CONNECTED, self.DISCONNECTED, self.RECONNECT, self.__RECONNECTED, 
+                                    self.__RECONNECTING, self.__RECONN_FAIL, self.MESSAGE_RESEND]
 
             if topic not in __temp_topic_map:
-                cls.__topic_map.append(topic)
+                if not self.is_topic_valid(topic):
+                    raise ValueError("$topic is not valid, use is_topic_valid($topic) to validate topic")
 
-            if cls.__connected:
-                cls.__start_consumer(topic)
-            
-            return True
+                self.__event_func[topic] = func
+                self.__topic_map.append(topic)
+
+            if self.__connected:
+                await self.__start_consumer(topic)
         
-        return wrapper
+            return True
+        else:
+            return False    
 
     async def off(self, topic):
         """
@@ -346,6 +371,9 @@ class Realtime:
         
         if not isinstance(topic, str):
                 raise ValueError("The topic must be a string.")
+        
+        if topic == "":
+                raise ValueError("$topic can't be an empty string.")
 
         if topic in self.__event_func:
             self.__event_func.pop(topic)
@@ -355,7 +383,14 @@ class Realtime:
         else:
             return False
 
-    def __delete_consumer(self, topic):
+    async def __delete_consumer(self, topic):
+        if topic in self.__consumerMap:
+            consumer = self.__consumerMap[topic]
+
+            await consumer.unsubscribe()
+
+            self.__consumerMap.pop(topic)
+
         return True
 
     async def __subscribe_to_topics(self):
@@ -363,20 +398,23 @@ class Realtime:
             await self.__start_consumer(topic)
 
     async def __start_consumer(self, topic):
-        self.__log(f"Starting consumer for {int(datetime.now(UTC).timestamp())}")
+        self.__log(f"Starting consumer for {topic}")
         
-        def on_message(msg):
+        async def on_message(msg):
             data = json.loads(msg.data.decode('utf-8'))
             self.__log(f"Received message => {data}")
 
-            msg.ack()
+            await msg.ack()
 
-            if topic in self.__event_func:
-                self.__event_func[topic](data)
+            if topic in self.__event_func and data["client_id"] != self.__get_client_id():
+                if inspect.iscoroutinefunction(self.__event_func[topic]):
+                    await self.__event_func[topic](data["message"])
+                else:
+                    self.__event_func[topic](data["message"])
 
         await self.__start_or_get_stream()
 
-        await self.__jetstream.subscribe(self.__get_stream_topic(topic), cb=on_message, config=nats_config.ConsumerConfig(
+        consumer = await self.__jetstream.subscribe(self.__get_stream_topic(topic), cb=on_message, config=nats_config.ConsumerConfig(
             name=self.__get_stream_topic(topic),
             filter_subject=[self.__get_stream_topic(topic), self.__get_stream_topic(topic) + "_presence"],
             replay_policy=nats_config.ReplayPolicy.INSTANT,
@@ -384,6 +422,7 @@ class Realtime:
             ack_policy=nats_config.AckPolicy.EXPLICIT
         ))
         
+        self.__consumerMap[topic] = consumer
 
     async def __start_or_get_stream(self):
         stream_name = self.__get_stream_name()
@@ -394,8 +433,6 @@ class Realtime:
         except Exception as e:
             self.__log(f"Stream not found: {e}")
             stream = None
-
-        self.__log(f"Stream => {stream.config.subjects}")
 
         if stream == None:
             await self.__jetstream.add_stream(name=stream_name,
@@ -412,9 +449,9 @@ class Realtime:
             self.__log(f"{stream_name} exists locally, updating and moving on...")
 
     # Utility functions
-    def __is_topic_valid(self, topic):
+    def is_topic_valid(self, topic):
         if topic != None and isinstance(topic, str):
-            return topic not in [
+            array_check = topic not in [
                 self.CONNECTED,
                 self.RECONNECT,
                 self.MESSAGE_RESEND,
@@ -423,6 +460,10 @@ class Realtime:
                 self.__RECONNECTING,
                 self.__RECONN_FAIL
             ]
+
+            space_star_check = " " not in topic and "*" not in topic
+
+            return array_check and space_star_check
         else:
             return False
         
@@ -454,23 +495,21 @@ class Realtime:
     
         return method_output
 
-    def __publish_messages_on_reconnect(self):
+    async def __publish_messages_on_reconnect(self):
         message_sent_status = []
 
         for message in self.__offline_message_buffer:
-            start_time = datetime.now()
+            output = await self.publish(message["topic"], message["message"])
 
-            max_retries = self.__get_publish_retry()
-            output = self.__retry_till_success(self.__publish, max_retries, 1, message["id"], message["room"], message["data"])
-
-            message_sent_status.append(output)
+            message_sent_status.append({
+                "topic": message["topic"],
+                "message": message["message"],
+                "sent": output
+            })
 
         self.__offline_message_buffer.clear()
         
         return message_sent_status
-
-    def is_topic_valid(self, topic):
-        return topic in self.__room_key_events
     
     def encode_json(self, data):
         return json.dumps(data).encode('utf-8')
@@ -514,12 +553,15 @@ class Realtime:
 
         return max_retries
 
-    def __run_async(self, func, *args):
-        thread = threading.Thread(target=func, args=args)
-        thread.start()
+    async def __run_in_background(self, func):
+        task = asyncio.create_task(func())
+        await task
 
     def __encode_json(self, data):
-        return json.dumps(data).encode('utf-8')
+        try:
+            return json.dumps(data).encode('utf-8')
+        except Exception as e:
+            raise ValueError(f"Error encoding JSON: {e}")
 
     def __log(self, msg):
         if self.__debug:

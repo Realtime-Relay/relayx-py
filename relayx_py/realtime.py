@@ -506,7 +506,7 @@ class Realtime:
             message_sent_status.append({
                 "topic": message["topic"],
                 "message": message["message"],
-                "sent": output
+                "resent": output
             })
 
         self.__offline_message_buffer.clear()

@@ -1,3 +1,5 @@
 build
-realtime.egg-info
+*.egg-info
 *.creds
+.pytest_cache
+__pycache__

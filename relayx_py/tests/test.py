@@ -5,7 +5,7 @@ import json
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from realtime import Realtime
+from relayx_py import Realtime
 
 class TestRealTime:
     def test_constructor(self):

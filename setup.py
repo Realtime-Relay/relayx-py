@@ -1,10 +1,11 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="relayx-py",
+    name="relayx_py",
     version="1.0.0",
-    packages=["realtime"],
+    packages=["relayx_py"],
     install_requires=["nats-py", "pytest-asyncio"],
     author="Relay",
-    description="A SDK to connect to the Relay Network"
+    description="A SDK to connect to the Relay Network",
+    license="MIT"
 )

@@ -1,4 +1,4 @@
-from realtime import Realtime
+from relayx_py import Realtime
 import asyncio
 import sys
 import json

@@ -167,6 +167,11 @@ class TestRealTime:
 
         with pytest.raises(ValueError):
             await realtime.off(b'hey')
+        
+        assert await realtime.off("hello") == True
+        assert await realtime.off("hello") == False
+        assert await realtime.off("hello") == False
+        assert await realtime.off("hello") == False
 
     @pytest.mark.asyncio
     async def test_publish_online(self):

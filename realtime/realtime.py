@@ -337,23 +337,25 @@ class Realtime:
             raise ValueError("The callback must be a callable function.")
         
         if topic not in self.__event_func:
-            __temp_topic_map = self.__topic_map.copy()
-            __temp_topic_map += [self.CONNECTED, self.DISCONNECTED, self.RECONNECT, self.__RECONNECTED, 
-                                    self.__RECONNECTING, self.__RECONN_FAIL, self.MESSAGE_RESEND]
-
-            if topic not in __temp_topic_map:
-                if not self.is_topic_valid(topic):
-                    raise ValueError("$topic is not valid, use is_topic_valid($topic) to validate topic")
-
-                self.__event_func[topic] = func
-                self.__topic_map.append(topic)
-
-            if self.__connected:
-                await self.__start_consumer(topic)
-        
-            return True
+            self.__event_func[topic] = func
         else:
-            return False    
+            return False
+
+        __temp_topic_map = self.__topic_map.copy()
+        __temp_topic_map += [self.CONNECTED, self.DISCONNECTED, self.RECONNECT, self.__RECONNECTED, 
+                                self.__RECONNECTING, self.__RECONN_FAIL, self.MESSAGE_RESEND]
+
+        if topic not in __temp_topic_map:
+            if not self.is_topic_valid(topic):
+                self.__event_func.pop(topic)
+                raise ValueError("$topic is not valid, use is_topic_valid($topic) to validate topic")
+
+            self.__topic_map.append(topic)
+
+        if self.__connected:
+            await self.__start_consumer(topic)
+    
+        return True  
 
     async def off(self, topic):
         """

@@ -6,7 +6,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="relayx_py",
-    version="1.0.1",
+    version="1.0.2",
     packages=["relayx_py"],
     install_requires=["nats-py", "pytest-asyncio"],
     author="Relay",

@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="relayx_py",
-    version="1.0.0",
+    version="1.0.1",
     packages=["relayx_py"],
     install_requires=["nats-py", "pytest-asyncio"],
     author="Relay",

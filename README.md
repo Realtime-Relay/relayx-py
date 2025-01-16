@@ -1,5 +1,5 @@
 # Relay NodeJS Library
-![License](https://img.shields.io/badge/MIT-green?label=License)<br>
+![License](https://img.shields.io/badge/Apache_2.0-green?label=License)<br>
 A powerful library for integrating real-time communication into your software stack, powered by the Relay Network.
 
 ## Features

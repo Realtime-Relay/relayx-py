@@ -7,5 +7,5 @@ setup(
     install_requires=["nats-py", "pytest-asyncio"],
     author="Relay",
     description="A SDK to connect to the Relay Network",
-    license="MIT"
+    license="Apache 2.0"
 )

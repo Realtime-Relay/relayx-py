@@ -644,7 +644,7 @@ class Realtime:
 
         return f"""
 -----BEGIN NATS USER JWT-----
-{self.api_key}
+{api_key}
 ------END NATS USER JWT------
 
 ************************* IMPORTANT *************************
@@ -652,8 +652,8 @@ NKEY Seed printed below can be used to sign and prove identity.
 NKEYs are sensitive and should be treated as secrets.
 
 -----BEGIN USER NKEY SEED-----
-{self.secret}
+{secret}
 ------END USER NKEY SEED------
 
 *************************************************************
-"""
+""".strip()

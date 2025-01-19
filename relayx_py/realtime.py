@@ -1,6 +1,6 @@
 import time
 import uuid
-from datetime import datetime, UTC, timezone, timedelta
+from datetime import datetime, timezone, timedelta
 import asyncio
 import threading
 import nats
@@ -70,7 +70,7 @@ class Realtime:
         self.__namespace = ""
 
         with open("user.creds", "w") as file:
-            file.write(self.__getCreds())
+            file.write(self.__getCreds().strip())
             file.close()
         
 
@@ -286,7 +286,7 @@ class Realtime:
                 "id": message_id,
                 "room": topic,
                 "message": data,
-                "start": int(datetime.now(UTC).timestamp())
+                "start": int(datetime.now(timezone.utc).timestamp())
             }
 
             encoded = self.__encode_json(message)
@@ -638,9 +638,13 @@ class Realtime:
         time.sleep(seconds)
 
     def __getCreds(self):
+        # To prevent \r\n from windows
+        api_key = self.api_key.strip()
+        secret = self.secret.strip()
+
         return f"""
 -----BEGIN NATS USER JWT-----
-{self.api_key}
+{api_key}
 ------END NATS USER JWT------
 
 ************************* IMPORTANT *************************
@@ -648,8 +652,8 @@ NKEY Seed printed below can be used to sign and prove identity.
 NKEYs are sensitive and should be treated as secrets.
 
 -----BEGIN USER NKEY SEED-----
-{self.secret}
+{secret}
 ------END USER NKEY SEED------
 
 *************************************************************
-        """
+""".strip()

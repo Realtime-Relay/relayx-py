@@ -6,9 +6,9 @@ long_description = (this_directory / "README.md").read_text()
 
 setup(
     name="relayx_py",
-    version="1.0.4",
+    version="1.0.5",
     packages=["relayx_py"],
-    install_requires=["nats-py", "pytest-asyncio"],
+    install_requires=["nats-py", "pytest-asyncio", "nkeys"],
     author="Relay",
     description="A SDK to connect to the Relay Network",
     license="Apache 2.0",

@@ -70,7 +70,7 @@ class Realtime:
         self.__namespace = ""
 
         with open("user.creds", "w") as file:
-            file.write(self.__getCreds())
+            file.write(self.__getCreds().strip())
             file.close()
         
 

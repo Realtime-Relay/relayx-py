@@ -2,6 +2,7 @@ import pytest
 import sys
 import os
 import json
+from datetime import datetime, timedelta, UTC, timezone
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -226,6 +227,51 @@ class TestRealTime:
                 "Hello World!", "Sup!"
             ])
             assert res == True
+
+            #######################################################################
+            # History tests
+            with pytest.raises(ValueError):
+                await realtime.history(None)
+
+            with pytest.raises(ValueError):
+                await realtime.history(124)
+            
+            with pytest.raises(ValueError):
+                await realtime.history({})
+
+            with pytest.raises(ValueError):
+                await realtime.history("hello", 1234)
+
+            with pytest.raises(ValueError):
+                await realtime.history(None, "1234")
+            
+            with pytest.raises(ValueError):
+                await realtime.history(None, "")
+            
+            now = datetime.now(UTC)
+
+            start = now - timedelta(days=4)
+            start = start.timestamp()
+            start = datetime.fromtimestamp(start, tz=timezone.utc)
+
+            res = await realtime.history("hello", start)
+            assert len(res) >= 0
+
+            with pytest.raises(ValueError):
+                res = await realtime.history("", start)
+
+            with pytest.raises(ValueError):
+                res = await realtime.history("hello", start, "None")
+
+            with pytest.raises(ValueError):
+                res = await realtime.history("hello", start, 1234)
+
+            end = now - timedelta(days=2)
+            end = start.timestamp()
+            end = datetime.fromtimestamp(end, tz=timezone.utc)
+
+            res = await realtime.history("hello", start, end)
+            assert len(res) >= 0
 
             await realtime.close()
 

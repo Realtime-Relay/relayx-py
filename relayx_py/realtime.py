@@ -1,6 +1,6 @@
 import time
 import uuid
-from datetime import datetime, UTC
+from datetime import datetime, UTC, timezone, timedelta
 import asyncio
 import threading
 import nats
@@ -384,6 +384,71 @@ class Realtime:
             return await self.__delete_consumer(topic)
         else:
             return False
+
+    async def history(self, topic, start=None, end=None):
+        if topic == None:
+            raise ValueError("$topic cannot be None.")
+
+        if not isinstance(topic, str):
+            raise ValueError("The topic must be a string.")
+        
+        if topic == "":
+            raise ValueError("The topic must be NOT be an empty string.")
+        
+        if start == None:
+            raise ValueError("$start cannot be None.")
+        
+        if not isinstance(start, datetime):
+            raise ValueError("$start must be a datetime object")
+        
+        if end != None:
+            if not isinstance(end, datetime):
+                raise ValueError("$end must be a datetime object")
+            
+            if start > end:
+                raise ValueError("$start > $end. $start must be lesser than $end")
+
+        await self.__start_or_get_stream()
+
+        self.__log(f"TIMESTAMP => {start.isoformat()}")
+
+        consumer = await self.__jetstream.subscribe(self.__get_stream_topic(topic), deliver_policy=nats_config.DeliverPolicy.BY_START_TIME, config=nats_config.ConsumerConfig(
+            opt_start_time=start.isoformat(),
+            ack_policy=nats_config.AckPolicy.EXPLICIT
+        ))
+
+        history = []
+
+        while True:
+            try:
+                msg = await consumer.next_msg()
+
+                await msg.ack()
+
+                dt_aware = msg.metadata.timestamp.timestamp()
+                utc_timestamp = datetime.fromtimestamp(dt_aware, tz=timezone.utc)
+                
+                if end != None:
+                    if utc_timestamp > end:
+                        self.__log("BREAK")
+                        self.__log(f"{utc_timestamp.isoformat()} > {end.isoformat()}")
+                        break
+
+                # Converting bytes to JSON
+                json_bytes = msg.data
+
+                # Decode the bytes into a string (assuming UTF-8)
+                json_str = json_bytes.decode('utf-8')
+
+                # Parse the JSON string into a Python object (dict in this case)
+                data = json.loads(json_str)
+
+                history.append(data["message"])
+            except Exception as e:
+                self.__log(e)
+                break
+        
+        return history
 
     async def __delete_consumer(self, topic):
         if topic in self.__consumerMap:

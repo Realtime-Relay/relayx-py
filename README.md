@@ -66,21 +66,40 @@ Unsubscribe from a topic:<br>
     else:
         print("Unable to unsubscribe from power_telemetry")
     ```
-4. <b>Valid Topic Check</b><br>
+4. <b>History</b><br>
+Get previously published messages between a start date and end date. Dates are in UTC.
+    ```python
+    now = datetime.now(UTC)
+
+    start = now - timedelta(days=4)
+
+    end = now - timedelta(days=2)
+
+    history = await realtime.history("hello", start, end)
+    ```
+    The end date is optional. Supplying only the start time will fetch all messages from the start time to now.
+    ```python
+    now = datetime.now(UTC)
+
+    start = now - timedelta(days=4)
+
+    history = await realtime.history("hello", start)
+    ```
+5. <b>Valid Topic Check</b><br>
 Utility function to check if a particular topic is valid. <b>No spaces and * allowed</b>
     ```python
     is_valid = realtime.is_topic_valid("topic")
 
     print(f"Topic Valid => {isValid}")
     ```
-5. <b>Sleep</b><br>
+6. <b>Sleep</b><br>
 Utility async function to delay code execution
     ```python
     print("Starting code execution...")
     realtime.sleep(2) // arg is in seconds
     print("This line executed after 2 seconds")
     ```
-6. <b>Close Connection to Relay</b><br>
+7. <b>Close Connection to Relay</b><br>
 Manually disconnect from the Relay Network
     ```python
     # Logic here
@@ -153,9 +172,16 @@ Subscribes to a topic. This is an async function.
 Deletes reference to user defined event callback for a topic. This will stop listening to a topic. This is an async function.
      * @param {string} topic 
      * @returns {boolean} - To check if topic unsubscribe was successful. Will return `false` if you try to unsubscribe from an already unsubscribed topic
-4. is_topic_valid()<br>
+4. history()<br>
+Get a list of messages published in the past, for a topic. This is an async function.<br>
+A list of messages can be obtained using a start time and end time. End time is optional. If end time is not specified, all messages from the start time to now is returned.
+     * @param {string} topic 
+     * @param {datetime} start
+     * @param {datetime} end
+     * @returns {json Array} - List of messages published in the past
+5. is_topic_valid()<br>
 Checks if a topic can be used to send messages to.
      * @param {string} topic - Name of event
      * @returns {boolean} - If topic is valid or not. <b>No spaces and * allowed!</b>
-5. sleep()<br>
+6. sleep()<br>
 Pauses code execution for a user defined time. Time passed into the method is in seconds.

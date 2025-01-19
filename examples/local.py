@@ -1,8 +1,9 @@
+import os
+import sys
 from relayx_py import Realtime
 import asyncio
-import sys
 import json
-import os
+from datetime import datetime, timedelta, UTC, timezone
 
 realtime = Realtime({
     "api_key": os.getenv("api_key", None),
@@ -54,6 +55,22 @@ async def main():
             await realtime.close()
         elif text == "init":
             await realtime.connect()
+        elif text == "history":
+            topic = await loop.run_in_executor(None, input, "Enter topic: ")
+
+            now = datetime.now(UTC)
+
+            # Subtract 2 days
+            start = now - timedelta(days=4)
+            start = start.timestamp()
+            start = datetime.fromtimestamp(start, tz=timezone.utc)
+
+            end = now - timedelta(days=2)
+            end = start.timestamp()
+            end = datetime.fromtimestamp(end, tz=timezone.utc)
+
+            history = await realtime.history("hello", start)
+            print(history)
         else:
             topic = input("Enter topic: ")
             ack = await realtime.publish(topic, {

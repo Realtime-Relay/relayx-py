@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timedelta, UTC, timezone
 
 realtime = Realtime({
-    "api_key": os.getenv("api_key", None),
+     "api_key": os.getenv("api_key", None),
     "secret": os.getenv("secret", None)
 })
 realtime.init(staging=True, opts={

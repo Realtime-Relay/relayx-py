@@ -16,27 +16,10 @@ realtime.init(staging=True, opts={
 async def onHello(data):
     print(json.dumps(data, indent=4))
 
-def onConnect():
+async def onConnect():
     print("[IMPL] Connected!")
 
-def on_reconnect(data):
-    print(f"[IMPL] => onReconnect {data}")
-
-def on_message_resend(data):
-    print(f"[IMPL] => MESSAGE RESEND {data}")
-
-def generic_handler(data):
-    print(f"[IMPL] => Generic Handler {data}")
-
-async def main():
     text = ""
-
-    await realtime.on("hello", onHello)
-    await realtime.on(Realtime.CONNECTED, onConnect)
-    await realtime.on(Realtime.RECONNECT, on_reconnect)
-    await realtime.on(Realtime.MESSAGE_RESEND, on_message_resend)
-
-    await realtime.connect()
 
     loop = asyncio.get_event_loop()
 
@@ -78,6 +61,23 @@ async def main():
             })
 
             print(f"PUBLISH RESPONSE => {ack}")
+
+def on_reconnect(data):
+    print(f"[IMPL] => onReconnect {data}")
+
+def on_message_resend(data):
+    print(f"[IMPL] => MESSAGE RESEND {data}")
+
+def generic_handler(data):
+    print(f"[IMPL] => Generic Handler {data}")
+
+async def main():
+    await realtime.on("hello", onHello)
+    await realtime.on(Realtime.CONNECTED, onConnect)
+    await realtime.on(Realtime.RECONNECT, on_reconnect)
+    await realtime.on(Realtime.MESSAGE_RESEND, on_message_resend)
+
+    await realtime.connect()
 
 asyncio.run(main())
 

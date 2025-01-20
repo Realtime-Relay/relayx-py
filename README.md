@@ -25,7 +25,7 @@ Install the relay library by running the command below in your terminal<br>
     })
     realtime.init()
 
-    # Initialization of topic listeners go here... (look at examples/example_chat.js for full implementation)
+    # Initialization of topic listeners go here... (look at examples/local.py for full implementation)
 
     await realtime.connect()
 

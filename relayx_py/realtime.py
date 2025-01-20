@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 import asyncio
 import threading
 import nats
+from nats.aio.client import RawCredentials
 import nats.js.api as nats_config
 import json
 import re
@@ -68,10 +69,7 @@ class Realtime:
             raise ValueError("Realtime($config). $config is None")
 
         self.__namespace = ""
-
-        with open("user.creds", "w") as file:
-            file.write(self.__getCreds().strip())
-            file.close()
+        self.quit_event = asyncio.Event()
         
 
     def init(self, staging=False, opts=None):
@@ -142,7 +140,7 @@ class Realtime:
                 "reconnect_time_wait": 1,
                 "allow_reconnect": True,
                 "token": self.api_key,
-                "user_credentials": "user.creds",
+                "user_credentials": RawCredentials(self.__getCreds()),
                 "reconnected_cb": self.__on_reconnect,
                 "disconnected_cb": self.__on_disconnect,
                 "error_cb": self.__on_error,
@@ -167,6 +165,8 @@ class Realtime:
                         await self.__event_func[self.CONNECTED]()
                     else:
                         self.__event_func[self.CONNECTED]()
+
+            await self.quit_event.wait()
 
         await self.__run_in_background(__connect)
 
@@ -257,6 +257,7 @@ class Realtime:
             self.__manual_disconnect = True
 
             await self.__natsClient.close()
+            self.quit_event.set()
         else:
             self.__manual_disconnect = False
 

@@ -9,7 +9,7 @@ import nats.js.api as nats_config
 import json
 import re
 import inspect
-import numbers
+import msgpack
 import uuid
 
 class Realtime:
@@ -293,7 +293,8 @@ class Realtime:
                 "start": int(datetime.now(timezone.utc).timestamp())
             }
 
-            encoded = self.__encode_json(message)
+            # encoded = self.__encode_json(message)
+            encoded = msgpack.packb(message)
 
             if topic not in self.__topic_map:
                 self.__topic_map.append(topic)
@@ -432,18 +433,11 @@ class Realtime:
                 
                 if end != None:
                     if utc_timestamp > end:
-                        self.__log("BREAK")
                         self.__log(f"{utc_timestamp.isoformat()} > {end.isoformat()}")
                         break
 
-                # Converting bytes to JSON
-                json_bytes = msg.data
-
-                # Decode the bytes into a string (assuming UTF-8)
-                json_str = json_bytes.decode('utf-8')
-
-                # Parse the JSON string into a Python object (dict in this case)
-                data = json.loads(json_str)
+                # Decoding using msgpack
+                data = msgpack.unpackb(msg.data, raw=False)
 
                 history.append(data["message"])
 
@@ -472,7 +466,7 @@ class Realtime:
         self.__log(f"Starting consumer for {topic}")
         
         async def on_message(msg):
-            data = json.loads(msg.data.decode('utf-8'))
+            data = msgpack.unpackb(msg.data, raw=False)
             self.__log(f"Received message => {data}")
 
             await msg.ack()

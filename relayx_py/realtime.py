@@ -9,7 +9,8 @@ import nats.js.api as nats_config
 import json
 import re
 import inspect
-import numbers
+import msgpack
+import uuid
 
 class Realtime:
     __event_func = {}
@@ -69,6 +70,7 @@ class Realtime:
             raise ValueError("Realtime($config). $config is None")
 
         self.__namespace = ""
+        self.__topicHash = ""
         self.quit_event = asyncio.Event()
         
 
@@ -126,6 +128,7 @@ class Realtime:
             
             if resp_data["status"] == "NAMESPACE_RETRIEVE_SUCCESS":
                 self.__namespace = resp_data["data"]["namespace"]
+                self.__topicHash = resp_data["data"]["hash"]
             else:
                 raise ValueError("Namespace not found")
         else:
@@ -290,12 +293,11 @@ class Realtime:
                 "start": int(datetime.now(timezone.utc).timestamp())
             }
 
-            encoded = self.__encode_json(message)
+            # encoded = self.__encode_json(message)
+            encoded = msgpack.packb(message)
 
             if topic not in self.__topic_map:
                 self.__topic_map.append(topic)
-
-                await self.__start_or_get_stream()
             else:
                 self.__log(f"{topic} exitsts locally, moving on...")
 
@@ -409,13 +411,12 @@ class Realtime:
             if start > end:
                 raise ValueError("$start > $end. $start must be lesser than $end")
 
-        await self.__start_or_get_stream()
-
         self.__log(f"TIMESTAMP => {start.isoformat()}")
 
         consumer = await self.__jetstream.subscribe(self.__get_stream_topic(topic), deliver_policy=nats_config.DeliverPolicy.BY_START_TIME, config=nats_config.ConsumerConfig(
             opt_start_time=start.isoformat(),
-            ack_policy=nats_config.AckPolicy.EXPLICIT
+            ack_policy=nats_config.AckPolicy.EXPLICIT,
+            name=f"{topic}_history_{uuid.uuid4()}"
         ))
 
         history = []
@@ -424,27 +425,23 @@ class Realtime:
             try:
                 msg = await consumer.next_msg()
 
-                await msg.ack()
+                if msg == None:
+                    break
 
                 dt_aware = msg.metadata.timestamp.timestamp()
                 utc_timestamp = datetime.fromtimestamp(dt_aware, tz=timezone.utc)
                 
                 if end != None:
                     if utc_timestamp > end:
-                        self.__log("BREAK")
                         self.__log(f"{utc_timestamp.isoformat()} > {end.isoformat()}")
                         break
 
-                # Converting bytes to JSON
-                json_bytes = msg.data
-
-                # Decode the bytes into a string (assuming UTF-8)
-                json_str = json_bytes.decode('utf-8')
-
-                # Parse the JSON string into a Python object (dict in this case)
-                data = json.loads(json_str)
+                # Decoding using msgpack
+                data = msgpack.unpackb(msg.data, raw=False)
 
                 history.append(data["message"])
+
+                await msg.ack()
             except Exception as e:
                 self.__log(e)
                 break
@@ -469,7 +466,7 @@ class Realtime:
         self.__log(f"Starting consumer for {topic}")
         
         async def on_message(msg):
-            data = json.loads(msg.data.decode('utf-8'))
+            data = msgpack.unpackb(msg.data, raw=False)
             self.__log(f"Received message => {data}")
 
             await msg.ack()
@@ -480,41 +477,17 @@ class Realtime:
                 else:
                     self.__event_func[topic](data["message"])
 
-        await self.__start_or_get_stream()
-
-        consumer = await self.__jetstream.subscribe(self.__get_stream_topic(topic), cb=on_message, config=nats_config.ConsumerConfig(
-            name=self.__get_stream_topic(topic),
-            filter_subject=[self.__get_stream_topic(topic), self.__get_stream_topic(topic) + "_presence"],
-            replay_policy=nats_config.ReplayPolicy.INSTANT,
-            deliver_policy=nats_config.DeliverPolicy.NEW,
-            ack_policy=nats_config.AckPolicy.EXPLICIT
-        ))
+        consumer = await self.__jetstream.subscribe(self.__get_stream_topic(topic), 
+                                                    stream=self.__get_stream_name(), 
+                                                    cb=on_message,
+                                                    config=nats_config.ConsumerConfig(
+                                                        name=f"{topic}_consumer_{uuid.uuid4()}",
+                                                        replay_policy=nats_config.ReplayPolicy.INSTANT,
+                                                        deliver_policy=nats_config.DeliverPolicy.NEW,
+                                                        ack_policy=nats_config.AckPolicy.EXPLICIT
+                                                    ))
         
         self.__consumerMap[topic] = consumer
-
-    async def __start_or_get_stream(self):
-        stream_name = self.__get_stream_name()
-        subs = self.__get_stream_topic_list()
-
-        try:
-            stream = await self.__jetstream.stream_info(name=stream_name)
-        except Exception as e:
-            self.__log(f"Stream not found: {e}")
-            stream = None
-
-        if stream == None:
-            await self.__jetstream.add_stream(name=stream_name,
-                                              subjects=subs,)
-
-            self.__log(f"Stream Created => {stream_name}")
-        else:
-            # Getting unique subjects from the stream
-            fSubs = stream.config.subjects + subs + self.__get_stream_topic_presence_list()
-            fSubs = list(set(fSubs))
-
-            resp = await self.__jetstream.update_stream(nats_config.StreamConfig(name=stream_name, subjects=fSubs))
-
-            self.__log(f"{stream_name} exists locally, updating and moving on...")
 
     # Utility functions
     def is_topic_valid(self, topic):
@@ -590,36 +563,7 @@ class Realtime:
             raise ValueError("$namespace is None, Cannot initialize program with None $namespace")
     
     def __get_stream_topic(self, topic):
-        return f"{self.__get_stream_name()}_{topic}"
-    
-    def __get_stream_topic_list(self):
-        topics = []
-
-        for topic in self.__topic_map:
-            topics.append(self.__get_stream_topic(topic))
-
-        return topics
-    
-    def __get_stream_topic_presence_list(self):
-        topics = []
-
-        for topic in self.__topic_map:
-            topics.append(self.__get_stream_topic(topic) + "_presence")
-
-        return topics
-
-    def __get_publish_retry(self):
-        max_retries = 0
-
-        if self.opts:
-            try:
-                max_retries = self.opts["max_retries"]
-            except:
-                max_retries = self.__max_publish_retries
-        else:
-            max_retries = self.__max_publish_retries
-
-        return max_retries
+        return f"{self.__topicHash}.{topic}"
 
     async def __run_in_background(self, func):
         task = asyncio.create_task(func())

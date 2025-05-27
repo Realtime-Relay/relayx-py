@@ -2,7 +2,7 @@ import time
 import uuid
 from datetime import datetime, timezone, timedelta
 import asyncio
-import threading
+import tzlocal
 import nats
 from nats.aio.client import RawCredentials
 import nats.js.api as nats_config
@@ -39,6 +39,10 @@ class Realtime:
     __manual_disconnect = False
 
     __offline_message_buffer = []
+
+    __latency = []
+    __latency_push_task = None
+    __is_sending_latency = False
 
     def __init__(self, config=None):
         if config is not None:
@@ -133,6 +137,40 @@ class Realtime:
                 raise ValueError("Namespace not found")
         else:
             raise ValueError("Namespace not found")
+        
+    async def __push_latency(self, data):
+        """
+        Gets the __namespace of the user using a service
+        """
+        self.__is_sending_latency = True
+
+        encoded = self.__encode_json({
+            "api_key": self.api_key,
+            "payload": data
+        })
+
+        response = None
+        try:
+            response = await self.__natsClient.request("accounts.user.log_latency", encoded, timeout=5)
+        except Exception as e:
+            self.__log(f"Error getting namespace: {e}")
+            response = None
+        
+        if response:
+            resp_data = response.data.decode('utf-8')
+            resp_data = json.loads(resp_data)
+
+            self.__latency.clear()
+
+            if self.__latency_push_task is not None:
+                self.__latency_push_task.cancel()
+                self.__latency_push_task = None
+            
+            self.__log(f"Latency push response: {resp_data}")
+        else:
+            self.__log("Repsonse is None")
+        
+        self.__is_sending_latency = False
 
     async def connect(self):
         async def __connect():
@@ -466,6 +504,8 @@ class Realtime:
         self.__log(f"Starting consumer for {topic}")
         
         async def on_message(msg):
+            now = datetime.now(timezone.utc).timestamp()
+            
             data = msgpack.unpackb(msg.data, raw=False)
             self.__log(f"Received message => {data}")
 
@@ -476,6 +516,9 @@ class Realtime:
                     await self.__event_func[topic](data["message"])
                 else:
                     self.__event_func[topic](data["message"])
+            
+            self.__log(f"Message processed for topic: {topic}")
+            await self.__log_latency(now, data)
 
         consumer = await self.__jetstream.subscribe(self.__get_stream_topic(topic), 
                                                     stream=self.__get_stream_name(), 
@@ -488,6 +531,52 @@ class Realtime:
                                                     ))
         
         self.__consumerMap[topic] = consumer
+
+    async def __log_latency(self, now, data):
+        """
+        Logs latency data to the server.
+        """
+        if data.get("client_id") == self.__get_client_id():
+            self.__log("Skipping latency log for own message")
+            return
+        
+        timezone = tzlocal.get_localzone().key
+        self.__log(f"Timezone: {timezone}")
+
+        latency = (now * 1000) - data.get("start")
+        self.__log(now)
+        self.__log(f"Latency => {latency}")
+
+        self.__latency.append({
+            "latency": latency,
+            "timestamp": now
+        })
+
+        if self.__latency_push_task is None:
+            self.__latency_push_task = asyncio.create_task(self.__delayed_latency_push(timezone))
+        
+        if len(self.__latency) >= 100 and not self.__is_sending_latency:
+            self.__log(f"Push from Length Check: {len(self.__latency)}")
+
+            await self.__push_latency({
+                "timezone": timezone,
+                "history": self.__latency.copy()
+            })
+
+    async def __delayed_latency_push(self, time_zone):
+        await asyncio.sleep(10)
+        self.__log("setTimeout called")
+
+        if len(self.__latency) > 0:
+            self.__log("Push from setTimeout")
+            await self.__push_latency({
+                "timezone": time_zone,
+                "history": self.__latency.copy()
+            })
+        else:
+            self.__log("No latency data to push")
+
+        self.__latency_push_task = None
 
     # Utility functions
     def is_topic_valid(self, topic):

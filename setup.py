@@ -6,7 +6,7 @@ long_description = (this_directory / "README.md").read_text()
 
 setup(
     name="relayx_py",
-    version="1.0.8",
+    version="1.0.9",
     packages=["relayx_py"],
     install_requires=["nats-py", "pytest-asyncio", "nkeys", "msgpack", "tzlocal"],
     author="Relay",

@@ -97,17 +97,11 @@ class Realtime:
         self.__base_url = [
             "nats://0.0.0.0:4221",
             "nats://0.0.0.0:4222",
-            "nats://0.0.0.0:4223",
-            "nats://0.0.0.0:4224",
-            "nats://0.0.0.0:4225",
-            "nats://0.0.0.0:4226",
+            "nats://0.0.0.0:4223"
         ] if staging else [
-            "nats://api.relay-x.io:4221",
-            "nats://api.relay-x.io:4222",
-            "nats://api.relay-x.io:4223",
-            "nats://api.relay-x.io:4224",
-            "nats://api.relay-x.io:4225",
-            "nats://api.relay-x.io:4226",
+            "tls://api.relay-x.io:4221",
+            "tls://api.relay-x.io:4222",
+            "tls://api.relay-x.io:4223"
         ]
 
     async def __get_namespace(self):
@@ -266,6 +260,8 @@ class Realtime:
     async def __on_closed(self):
         self.__log("Connection is closed")
 
+        self.__offline_message_buffer.clear()
+
     async def __on_reconnect_attempt(self):
         self.__log(f"Reconnection attempt underway...")
 
@@ -296,6 +292,8 @@ class Realtime:
             self.__disconnected = True
 
             self.__manual_disconnect = True
+
+            self.__offline_message_buffer.clear()
 
             await self.__natsClient.close()
             self.quit_event.set()

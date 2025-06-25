@@ -11,6 +11,7 @@ import re
 import inspect
 import msgpack
 import uuid
+import numbers
 
 class Realtime:
     __event_func = {}
@@ -315,8 +316,7 @@ class Realtime:
         if not self.is_topic_valid(topic):
             raise ValueError("$topic is not valid, use is_topic_valid($topic) to validate topic")
         
-        if data == None:
-            raise ValueError("$data cannot be None.")
+        self.__is_message_valid(data)
 
         if self.__connected:
             message_id = str(uuid.uuid4())
@@ -665,6 +665,21 @@ class Realtime:
     def __log(self, msg):
         if self.__debug:
             print(msg)  # Replace with a logging system if necessary
+
+    def __is_message_valid(self, msg):
+        if msg == None:
+            raise ValueError("$msg cannot be None.")
+        
+        if isinstance(msg, str):
+            return True
+        
+        if isinstance(msg, numbers.Number):
+            return True
+        
+        if isinstance(msg, dict):
+            return True
+        
+        return False
 
     def sleep(self, seconds):
         time.sleep(seconds)

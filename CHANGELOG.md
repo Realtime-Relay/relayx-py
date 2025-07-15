@@ -1,3 +1,6 @@
+V1.0.12
+- Corrected URL
+
 V1.0.11
 - Replay missed messages on reconnection
 - Wildcard topic pub / sub

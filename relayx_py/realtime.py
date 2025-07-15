@@ -112,9 +112,9 @@ class Realtime:
                 "nats://0.0.0.0:4222",
                 "nats://0.0.0.0:4223"
             ] if staging else [
-                "tls://api2.relay-x.io:4221",
-                "tls://api2.relay-x.io:4222",
-                "tls://api2.relay-x.io:4223"
+                "tls://api.relay-x.io:4221",
+                "tls://api.relay-x.io:4222",
+                "tls://api.relay-x.io:4223"
             ]
             
 

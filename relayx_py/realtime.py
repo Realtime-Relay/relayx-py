@@ -12,6 +12,10 @@ import inspect
 import msgpack
 import uuid
 import numbers
+import socket
+from functools import wraps
+import os
+import re
 
 class Realtime:
     __event_func = {}
@@ -44,6 +48,8 @@ class Realtime:
     __latency = []
     __latency_push_task = None
     __is_sending_latency = False
+
+    __disconnect_time = None
 
     def __init__(self, config=None):
         if config is not None:
@@ -95,15 +101,22 @@ class Realtime:
         else:
             self.__debug = False
 
-        self.__base_url = [
-            "nats://0.0.0.0:4221",
-            "nats://0.0.0.0:4222",
-            "nats://0.0.0.0:4223"
-        ] if staging else [
-            "tls://api.relay-x.io:4221",
-            "tls://api.relay-x.io:4222",
-            "tls://api.relay-x.io:4223"
-        ]
+        proxy = os.getenv("PROXY", None)
+
+        if proxy:
+            self.__base_url = ["tls://api2.relay-x.io:8666"]
+            self.__initDNSSpoof()
+        else:
+            self.__base_url = [
+                "nats://0.0.0.0:4221",
+                "nats://0.0.0.0:4222",
+                "nats://0.0.0.0:4223"
+            ] if staging else [
+                "tls://api2.relay-x.io:4221",
+                "tls://api2.relay-x.io:4222",
+                "tls://api2.relay-x.io:4223"
+            ]
+            
 
     async def __get_namespace(self):
         """
@@ -211,6 +224,7 @@ class Realtime:
         self.__disconnected = True
         self.__consumerMap.clear()
         self.__connected = False
+        self.__disconnect_time = datetime.now(timezone.utc).isoformat();
 
         if self.DISCONNECTED in self.__event_func:
             if inspect.iscoroutinefunction(self.__event_func[self.DISCONNECTED]):
@@ -237,6 +251,8 @@ class Realtime:
             else:
                 self.__event_func[self.RECONNECT](self.__RECONNECTED)
 
+        await self.__subscribe_to_topics()
+
         # Publish messages issued when client was in reconnection state
         output = await self.__publish_messages_on_reconnect()
 
@@ -251,7 +267,7 @@ class Realtime:
         self.__log(f"There was an error: {e}")
 
         # Reconnecting error catch
-        if "[Errno 61]" in str(e):
+        if str(e) == "":
             if self.RECONNECT in self.__event_func:
                 if inspect.iscoroutinefunction(self.__event_func[self.RECONNECT]):
                     await self.__event_func[self.RECONNECT](self.__RECONNECTING)
@@ -261,12 +277,18 @@ class Realtime:
     async def __on_closed(self):
         self.__log("Connection is closed")
 
+        if self.__reconnected_attempt:
+            self.__on_reconnect_failed()
+
         self.__offline_message_buffer.clear()
+        self.__disconnect_time = None
+        self.__connected = False
 
     async def __on_reconnect_attempt(self):
         self.__log(f"Reconnection attempt underway...")
 
-        self.__reconnecting = True
+        self.__connected = False
+        self.__reconnected_attempt = True
 
         if self.RECONNECT in self.__event_func:
             if inspect.iscoroutinefunction(self.__event_func[self.RECONNECT]):
@@ -281,8 +303,6 @@ class Realtime:
 
         if self.RECONNECT in self.__event_func:
             self.__event_func[self.RECONNECT](self.__RECONN_FAIL)
-
-        self.__offline_message_buffer.clear()
 
     async def close(self):
         """
@@ -518,13 +538,16 @@ class Realtime:
             self.__log(f"Message processed for topic: {topic}")
             await self.__log_latency(now, data)
 
+        startTime = datetime.now(timezone.utc).isoformat() if self.__disconnect_time is None else self.__disconnect_time
+
         consumer = await self.__jetstream.subscribe(self.__get_stream_topic(topic), 
                                                     stream=self.__get_stream_name(), 
                                                     cb=on_message,
                                                     config=nats_config.ConsumerConfig(
                                                         name=f"{topic}_consumer_{uuid.uuid4()}",
                                                         replay_policy=nats_config.ReplayPolicy.INSTANT,
-                                                        deliver_policy=nats_config.DeliverPolicy.NEW,
+                                                        deliver_policy=nats_config.DeliverPolicy.BY_START_TIME,
+                                                        opt_start_time=startTime,
                                                         ack_policy=nats_config.AckPolicy.EXPLICIT
                                                     ))
         
@@ -550,10 +573,10 @@ class Realtime:
             "timestamp": now
         })
 
-        if self.__latency_push_task is None:
+        if self.__latency_push_task is None and self.__connected:
             self.__latency_push_task = asyncio.create_task(self.__delayed_latency_push(timezone))
         
-        if len(self.__latency) >= 100 and not self.__is_sending_latency:
+        if len(self.__latency) >= 100 and not self.__is_sending_latency and self.__connected:
             self.__log(f"Push from Length Check: {len(self.__latency)}")
 
             await self.__push_latency({
@@ -562,7 +585,7 @@ class Realtime:
             })
 
     async def __delayed_latency_push(self, time_zone):
-        await asyncio.sleep(10)
+        await asyncio.sleep(30)
         self.__log("setTimeout called")
 
         if len(self.__latency) > 0:
@@ -589,7 +612,9 @@ class Realtime:
                 self.__RECONN_FAIL
             ]
 
-            space_star_check = " " not in topic and "*" not in topic
+            TOPIC_REGEX = re.compile(r'^(?!\$)[A-Za-z0-9_,.*>$-]+$')
+
+            space_star_check = " " not in topic and bool(TOPIC_REGEX.match(topic))
 
             return array_check and space_star_check
         else:
@@ -704,3 +729,16 @@ NKEYs are sensitive and should be treated as secrets.
 
 *************************************************************
 """.strip()
+    
+    def __initDNSSpoof(self):
+        self.__log("Init DNS Spoofing")
+        _real_getaddrinfo = socket.getaddrinfo
+
+        @wraps(_real_getaddrinfo)
+        def patched_getaddrinfo(host, port, family=0, socktype=0, proto=0, flags=0):
+            if host == "api2.relay-x.io":
+                return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('127.0.0.1', port))]
+
+            return _real_getaddrinfo(host, port, family=0, socktype=0, proto=0, flags=0)
+
+        socket.getaddrinfo = patched_getaddrinfo

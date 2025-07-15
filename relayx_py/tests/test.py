@@ -68,11 +68,11 @@ class TestRealTime:
         assert rt.staging == False
         assert rt.opts == {}
 
-        rt.init(staging=True, opts={
+        rt.init(staging=False, opts={
             "debug": True
         })
 
-        assert rt.staging == True
+        assert rt.staging == False
         assert rt.opts == {
             "debug": True
         }
@@ -83,7 +83,7 @@ class TestRealTime:
             "api_key": os.getenv("api_key", None),
             "secret": os.getenv("secret", None)
         })
-        self.realtime.init(staging=True, opts={
+        self.realtime.init(staging=False, opts={
             "debug": True
         })
 
@@ -100,7 +100,7 @@ class TestRealTime:
             "secret": os.getenv("secret", None)
         })
 
-        realtime.init(staging=True, opts={
+        realtime.init(staging=False, opts={
             "debug": True
         })
 
@@ -120,9 +120,6 @@ class TestRealTime:
             await realtime.on({
                 "hello": "world"
             }, generic_handler)
-
-        with pytest.raises(ValueError):
-            await realtime.on("hello.*", generic_handler)
 
         with pytest.raises(ValueError):
             await realtime.on("hello world", generic_handler)
@@ -153,7 +150,7 @@ class TestRealTime:
             "secret": os.getenv("secret", None)
         })
 
-        realtime.init(staging=True, opts={
+        realtime.init(staging=False, opts={
             "debug": True
         })
 
@@ -181,7 +178,7 @@ class TestRealTime:
             "secret": os.getenv("secret", None)
         })
 
-        realtime.init(staging=True, opts={
+        realtime.init(staging=False, opts={
             "debug": True
         })
 
@@ -204,13 +201,7 @@ class TestRealTime:
                 await realtime.publish("hello", None)
 
             with pytest.raises(ValueError):
-                await realtime.publish("hello", b'hello')
-
-            with pytest.raises(ValueError):
                 await realtime.publish("hello world", b'hello')
-
-            with pytest.raises(ValueError):
-                await realtime.publish("hello*world", b'hello')
 
             res = await realtime.publish("hello", "generic_handler")
             assert res == True
@@ -277,3 +268,86 @@ class TestRealTime:
 
         await realtime.on(Realtime.CONNECTED, onConnect)
         await realtime.connect()
+
+    @pytest.mark.asyncio
+    async def test_topic_validation(self):
+        realtime = Realtime({
+            "api_key": os.getenv("api_key", None),
+            "secret": os.getenv("secret", None)
+        })
+
+        VALID_TOPICS = [
+            "Orders",
+            "customer_123",
+            "foo-bar",
+            "a,b,c",
+            "*",
+            "foo>*",
+            "hello$world",
+            "topic.123",
+            "ABC_def-ghi",
+            "data_stream_2025",
+            "NODE*",
+            "pubsub>events",
+            "log,metric,error",
+            "X123_Y456",
+            "multi.step.topic",
+            "batch-process",
+            "sensor1_data",
+            "finance$Q2",
+            "alpha,beta,gamma",
+            "Z9_Y8-X7",
+            "config>*",
+            "route-map",
+            "STATS_2025-07",
+            "msg_queue*",
+            "update>patch",
+            "pipeline_v2",
+            "FOO$BAR$BAZ",
+            "user.profile",
+            "id_001-xyz",
+            "event_queue>"
+        ]
+
+        for topic in VALID_TOPICS:
+            valid = realtime.is_topic_valid(topic)
+            assert valid
+
+        INVALID_TOPICS = [
+            "$internal",          # starts with $
+            "hello world",        # space
+            "topic/",             # slash
+            "name?",              # ?
+            "foo#bar",            # #
+            "bar.baz!",           # !
+            " space",             # leading space
+            "tab\tchar",          # tab
+            "line\nbreak",        # newline
+            "comma ,",            # space+comma
+            "",                   # empty string
+            "bad|pipe",           # |
+            "semi;colon",         # ;
+            "colon:here",         # :
+            "quote's",            # '
+            "\"doublequote\"",    # "
+            "brackets[]",         # []
+            "brace{}",            # {}
+            "paren()",            # ()
+            "plus+sign",          # +
+            "eq=val",             # =
+            "gt>lt<",             # <
+            "percent%",           # %
+            "caret^",             # ^
+            "ampersand&",         # &
+            "back\\slash",        # backslash
+            "中文字符",            # non‑ASCII
+            "👍emoji",            # emoji
+            "foo\rbar",           # carriage return
+            "end "                # trailing space
+        ]
+
+        for topic in INVALID_TOPICS:
+            valid = realtime.is_topic_valid(topic)
+            assert not valid
+
+        

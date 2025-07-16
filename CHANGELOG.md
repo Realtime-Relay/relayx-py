@@ -1,3 +1,6 @@
+V1.0.13
+- Wildcard pub / sub fixes
+
 V1.0.12
 - Corrected URL
 

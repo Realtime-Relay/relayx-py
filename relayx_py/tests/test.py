@@ -277,36 +277,36 @@ class TestRealTime:
         })
 
         VALID_TOPICS = [
-            "Orders",
-            "customer_123",
-            "foo-bar",
-            "a,b,c",
+            "foo",
+            "foo.bar",
+            "foo.bar.baz",
             "*",
-            "foo>*",
-            "hello$world",
-            "topic.123",
-            "ABC_def-ghi",
-            "data_stream_2025",
-            "NODE*",
-            "pubsub>events",
-            "log,metric,error",
-            "X123_Y456",
-            "multi.step.topic",
-            "batch-process",
-            "sensor1_data",
-            "finance$Q2",
-            "alpha,beta,gamma",
-            "Z9_Y8-X7",
-            "config>*",
-            "route-map",
-            "STATS_2025-07",
-            "msg_queue*",
-            "update>patch",
-            "pipeline_v2",
-            "FOO$BAR$BAZ",
-            "user.profile",
-            "id_001-xyz",
-            "event_queue>"
+            "foo.*",
+            "*.bar",
+            "foo.*.baz",
+            ">",
+            "foo.>",
+            "foo.bar.>",
+            "*.*.>",
+            "alpha_beta",
+            "alpha-beta",
+            "alpha~beta",
+            "abc123",
+            "123abc",
+            "~",
+            "alpha.*.>",
+            "alpha.*",
+            "alpha.*.*",
+            "-foo",
+            "foo_bar-baz~qux",
+            "A.B.C",
+            "sensor.temperature",
+            "metric.cpu.load",
+            "foo.*.*",
+            "foo.*.>",
+            "foo_bar.*",
+            "*.*",
+            "metrics.>"
         ]
 
         for topic in VALID_TOPICS:
@@ -314,40 +314,111 @@ class TestRealTime:
             assert valid
 
         INVALID_TOPICS = [
-            "$internal",          # starts with $
-            "hello world",        # space
-            "topic/",             # slash
-            "name?",              # ?
-            "foo#bar",            # #
-            "bar.baz!",           # !
-            " space",             # leading space
-            "tab\tchar",          # tab
-            "line\nbreak",        # newline
-            "comma ,",            # space+comma
-            "",                   # empty string
-            "bad|pipe",           # |
-            "semi;colon",         # ;
-            "colon:here",         # :
-            "quote's",            # '
-            "\"doublequote\"",    # "
-            "brackets[]",         # []
-            "brace{}",            # {}
-            "paren()",            # ()
-            "plus+sign",          # +
-            "eq=val",             # =
-            "gt>lt<",             # <
-            "percent%",           # %
-            "caret^",             # ^
-            "ampersand&",         # &
-            "back\\slash",        # backslash
-            "中文字符",            # non‑ASCII
-            "👍emoji",            # emoji
-            "foo\rbar",           # carriage return
-            "end "                # trailing space
+            "$foo",
+            "foo$",
+            "foo.$.bar",
+            "foo..bar",
+            ".foo",
+            "foo.",
+            "foo.>.bar",
+            ">foo",
+            "foo>bar",
+            "foo.>bar",
+            "foo.bar.>.",
+            "foo bar",
+            "foo/bar",
+            "foo#bar",
+            "",
+            " ",
+            "..",
+            ".>",
+            "foo..",
+            ".",
+            ">.",
+            "foo,baz",
+            "αbeta",
+            "foo|bar",
+            "foo;bar",
+            "foo:bar",
+            "foo%bar",
+            "foo.*.>.bar",
+            "foo.*.>.",
+            "foo.*..bar",
+            "foo.>.bar",
+            "foo>"
         ]
 
         for topic in INVALID_TOPICS:
             valid = realtime.is_topic_valid(topic)
             assert not valid
 
-        
+    @pytest.mark.asyncio
+    async def test_pattern_matcher_validation(self):
+        TEST_CASES = [
+            ("foo",                 "foo",                      True),
+            ("foo",                 "bar",                      False),
+            ("foo.*",               "foo.bar",                  True),
+            ("foo.bar",             "foo.*",                    True),
+            ("*",                   "token",                    True),
+            ("*",                   "*",                        True),
+            ("foo.*",               "foo.bar.baz",              False),
+            ("foo.>",               "foo.bar.baz",              True),
+            ("foo.>",               "foo",                      False),
+            ("foo.bar.baz",         "foo.>",                    True),
+            ("foo.bar.>",           "foo.bar",                  False),
+            ("foo",                 "foo.>",                    False),
+            ("foo.*.>",             "foo.bar.baz.qux",          True),
+            ("foo.*.baz",           "foo.bar.>",                True),
+            ("alpha.*",             "beta.gamma",               False),
+            ("alpha.beta",          "alpha.*.*",                False),
+            ("foo.>.bar",           "foo.any.bar",              False),
+            (">",                   "foo.bar",                  True),
+            (">",                   ">",                        True),
+            ("*",                   ">",                        True),
+            ("*.>",                 "foo.bar",                  True),
+            ("*.*.*",               "a.b.c",                    True),
+            ("*.*.*",               "a.b",                      False),
+            ("a.b.c.d.e",           "a.b.c.d.e",                True),
+            ("a.b.c.d.e",           "a.b.c.d.f",                False),
+            ("a.b.*.d",             "a.b.c.d",                  True),
+            ("a.b.*.d",             "a.b.c.e",                  False),
+            ("a.b.>",               "a.b",                      False),
+            ("a.b",                 "a.b.c.d.>",               False),
+            ("a.b.>.c",             "a.b.x.c",                  False),
+            ("a.*.*",               "a.b",                      False),
+            ("a.*",                 "a.b.c",                    False),
+            ("metrics.cpu.load",    "metrics.*.load",           True),
+            ("metrics.cpu.load",    "metrics.cpu.*",            True),
+            ("metrics.cpu.load",    "metrics.>.load",           False),
+            ("metrics.>",           "metrics",                  False),
+            ("metrics.>",           "othermetrics.cpu",         False),
+            ("*.*.>",               "a.b",                      False),
+            ("*.*.>",               "a.b.c.d",                  True),
+            ("a.b.c",               "*.*.*",                    True),
+            ("a.b.c",               "*.*",                      False),
+            ("alpha.*.>",           "alpha",                    False),
+            ("alpha.*.>",           "alpha.beta",               False),
+            ("alpha.*.>",           "alpha.beta.gamma",         True),
+            ("alpha.*.>",           "beta.alpha.gamma",         False),
+            ("foo-bar_baz",         "foo-bar_baz",              True),
+            ("foo-bar_*",           "foo-bar_123",              False),  # '*' literal inside token
+            ("foo-bar_*",           "foo-bar_*",                True),
+            ("order-*",             "order-123",                False),
+            ("hello.hey.*",         "hello.hey.>",              True),
+        ]
+
+        realtime = Realtime({
+            "api_key": os.getenv("api_key", None),
+            "secret": os.getenv("secret", None)
+        })
+
+        for testCase in TEST_CASES:
+            tokenA = testCase[0]
+            tokenB = testCase[1]
+            expected_result = testCase[2]
+
+            print(f"{tokenA} || {tokenB} => {expected_result}")
+
+            result = realtime.topic_pattern_matcher(tokenA, tokenB)
+
+            assert result == expected_result

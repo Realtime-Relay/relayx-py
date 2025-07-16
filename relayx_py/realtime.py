@@ -5,6 +5,7 @@ import asyncio
 import tzlocal
 import nats
 from nats.aio.client import RawCredentials
+from concurrent.futures import ThreadPoolExecutor
 import nats.js.api as nats_config
 import json
 import re
@@ -20,6 +21,7 @@ import re
 class Realtime:
     __event_func = {}
     __topic_map = []
+    __pool = None
 
     CONNECTED = "CONNECTED"
     RECONNECT = "RECONNECT"
@@ -35,6 +37,7 @@ class Realtime:
     __jetstream = None
     __jsManager = None
     __consumerMap = {}
+    __consumer = None
 
     __reconnected = False
     __disconnected = True
@@ -82,6 +85,9 @@ class Realtime:
 
         self.__namespace = ""
         self.__topicHash = ""
+
+        self._pool = ThreadPoolExecutor(max_workers=1000)
+
         self.quit_event = asyncio.Event()
         
 
@@ -210,10 +216,7 @@ class Realtime:
             # Call the callback function if present
             if self.CONNECTED in self.__event_func:
                 if self.__event_func[self.CONNECTED]:
-                    if inspect.iscoroutinefunction(self.__event_func[self.CONNECTED]):
-                        await self.__event_func[self.CONNECTED]()
-                    else:
-                        self.__event_func[self.CONNECTED]()
+                    self.__execute_topic_callback(self.CONNECTED, None)
 
             await self.quit_event.wait()
 
@@ -222,15 +225,11 @@ class Realtime:
     async def __on_disconnect(self):
         self.__log("Disconnected from server")
         self.__disconnected = True
-        self.__consumerMap.clear()
         self.__connected = False
-        self.__disconnect_time = datetime.now(timezone.utc).isoformat();
+        self.__disconnect_time = datetime.now(timezone.utc).isoformat()
 
         if self.DISCONNECTED in self.__event_func:
-            if inspect.iscoroutinefunction(self.__event_func[self.DISCONNECTED]):
-                await self.__event_func[self.DISCONNECTED]()
-            else:
-                self.__event_func[self.DISCONNECTED]()
+            self.__execute_topic_callback(self.DISCONNECTED, None)
 
         if not self.__manual_disconnect:
             # This was not a manual disconnect.
@@ -246,10 +245,7 @@ class Realtime:
         self.__connected = True
 
         if self.RECONNECT in self.__event_func:
-            if inspect.iscoroutinefunction(self.__event_func[self.RECONNECT]):
-                await self.__event_func[self.RECONNECT](self.__RECONNECTED)
-            else:
-                self.__event_func[self.RECONNECT](self.__RECONNECTED)
+            self.__execute_topic_callback(self.RECONNECT, self.__RECONNECTED)
 
         await self.__subscribe_to_topics()
 
@@ -258,10 +254,7 @@ class Realtime:
 
         if len(output) > 0:
             if self.MESSAGE_RESEND in self.__event_func:
-                if inspect.iscoroutinefunction(self.__event_func[self.MESSAGE_RESEND]):
-                    await self.__event_func[self.MESSAGE_RESEND](output)
-                else:
-                    self.__event_func[self.MESSAGE_RESEND](output)
+                self.__execute_topic_callback(self.MESSAGE_RESEND, output)
 
     async def __on_error(self, e):
         self.__log(f"There was an error: {e}")
@@ -269,10 +262,7 @@ class Realtime:
         # Reconnecting error catch
         if str(e) == "":
             if self.RECONNECT in self.__event_func:
-                if inspect.iscoroutinefunction(self.__event_func[self.RECONNECT]):
-                    await self.__event_func[self.RECONNECT](self.__RECONNECTING)
-                else:
-                    self.__event_func[self.RECONNECT](self.__RECONNECTING)
+                self.__execute_topic_callback(self.RECONNECT, self.__RECONNECTING)
 
     async def __on_closed(self):
         self.__log("Connection is closed")
@@ -291,10 +281,7 @@ class Realtime:
         self.__reconnected_attempt = True
 
         if self.RECONNECT in self.__event_func:
-            if inspect.iscoroutinefunction(self.__event_func[self.RECONNECT]):
-                await self.__event_func[self.RECONNECT](self.__RECONNECTING)
-            else:
-                self.__event_func[self.RECONNECT](self.__RECONNECTING)
+            self.__execute_topic_callback(self.RECONNECT, self.__RECONNECTING)
 
     def __on_reconnect_failed(self):
         self.__log("Reconnection failed")
@@ -315,6 +302,8 @@ class Realtime:
             self.__manual_disconnect = True
 
             self.__offline_message_buffer.clear()
+
+            await self.__delete_consumer()
 
             await self.__natsClient.close()
             self.quit_event.set()
@@ -412,7 +401,7 @@ class Realtime:
             self.__topic_map.append(topic)
 
         if self.__connected:
-            await self.__start_consumer(topic)
+            await self.__start_consumer()
     
         return True  
 
@@ -440,7 +429,7 @@ class Realtime:
             self.__event_func.pop(topic)
             self.__topic_map.remove(topic)
 
-            return await self.__delete_consumer(topic)
+            return True
         else:
             return False
 
@@ -504,22 +493,19 @@ class Realtime:
         
         return history
 
-    async def __delete_consumer(self, topic):
-        if topic in self.__consumerMap:
-            consumer = self.__consumerMap[topic]
-
-            await consumer.unsubscribe()
-
-            self.__consumerMap.pop(topic)
+    async def __delete_consumer(self):
+        if self.__consumer:
+            await self.__consumer.unsubscribe()
 
         return True
 
     async def __subscribe_to_topics(self):
-        for topic in self.__topic_map:
-            await self.__start_consumer(topic)
+        if len(self.__topic_map) > 0:
+            await self.__start_consumer()
 
-    async def __start_consumer(self, topic):
-        self.__log(f"Starting consumer for {topic}")
+    async def __start_consumer(self):
+        if self.__consumer is not None:
+            return
         
         async def on_message(msg):
             now = datetime.now(timezone.utc).timestamp()
@@ -529,29 +515,35 @@ class Realtime:
 
             await msg.ack()
 
-            if topic in self.__event_func and data["client_id"] != self.__get_client_id():
-                if inspect.iscoroutinefunction(self.__event_func[topic]):
-                    await self.__event_func[topic](data["message"])
-                else:
-                    self.__event_func[topic](data["message"])
+            topic = self.__strip_stream_hash(msg.subject)
+
+            if data["client_id"] != self.__get_client_id():
+                topics = self.get_callback_topics(topic)
+
+                for top in topics:
+                    self.__execute_topic_callback(top, {
+                            "id": data["id"],
+                            "topic": topic,
+                            "message": data["message"]
+                        })
             
             self.__log(f"Message processed for topic: {topic}")
             await self.__log_latency(now, data)
 
         startTime = datetime.now(timezone.utc).isoformat() if self.__disconnect_time is None else self.__disconnect_time
 
-        consumer = await self.__jetstream.subscribe(self.__get_stream_topic(topic), 
+        self.__consumer = await self.__jetstream.subscribe(self.__get_stream_topic(">"), 
                                                     stream=self.__get_stream_name(), 
                                                     cb=on_message,
                                                     config=nats_config.ConsumerConfig(
-                                                        name=f"{topic}_consumer_{uuid.uuid4()}",
+                                                        name=f"consumer_{uuid.uuid4()}",
                                                         replay_policy=nats_config.ReplayPolicy.INSTANT,
                                                         deliver_policy=nats_config.DeliverPolicy.BY_START_TIME,
                                                         opt_start_time=startTime,
                                                         ack_policy=nats_config.AckPolicy.EXPLICIT
                                                     ))
-        
-        self.__consumerMap[topic] = consumer
+
+        self.__log(self.__consumer)
 
     async def __log_latency(self, now, data):
         """
@@ -612,7 +604,7 @@ class Realtime:
                 self.__RECONN_FAIL
             ]
 
-            TOPIC_REGEX = re.compile(r'^(?!\$)[A-Za-z0-9_,.*>$-]+$')
+            TOPIC_REGEX = re.compile(r"^(?!.*\$)(?:[A-Za-z0-9_*~-]+(?:\.[A-Za-z0-9_*~-]+)*(?:\.>)?|>)$")
 
             space_star_check = " " not in topic and bool(TOPIC_REGEX.match(topic))
 
@@ -705,6 +697,134 @@ class Realtime:
             return True
         
         return False
+
+    def get_callback_topics(self, topic):
+        """
+        Return all subscription‑patterns (callbacks) that match a concrete topic,
+        excluding the five control events.
+
+        Parameters
+        ----------
+        topic : str
+            The concrete subject your client just received / published.
+
+        Returns
+        -------
+        List[str]
+            Every pattern key from ``self._event_func`` that matches *topic*
+            and is **not** one of the control events.
+        """
+        ignore = {
+            self.CONNECTED,
+            self.RECONNECT,
+            self.MESSAGE_RESEND,
+            self.DISCONNECTED,
+            self.__RECONNECTED,
+            self.__RECONNECTING,
+            self.__RECONN_FAIL
+        }
+
+        valid_topics = []
+
+        for pattern in self.__event_func.keys():
+            if pattern in ignore:
+                continue
+
+            if self.topic_pattern_matcher(pattern, topic):
+                valid_topics.append(pattern)
+
+        return valid_topics
+
+    def topic_pattern_matcher(self, pattern_a, pattern_b):
+        """
+        Return True when two NATS‑style subject patterns could match
+        the same concrete subject.
+
+        Rules
+        -----
+        · Literal tokens must be equal.
+        · '*'  ⇒ exactly one token (either side).
+        · '>'  ⇒ one‑or‑more tokens AND must be the final token in its pattern.
+        · '$'  never allowed (assume caller already validated with is_valid_subject).
+
+        The algorithm walks both token lists with pointers and back‑tracks
+        when it finds a '>' that can absorb additional tokens.
+        """
+        a = pattern_a.split(".")
+        b = pattern_b.split(".")
+        i = j = 0                       # cursors
+        star_a_j = star_b_j = -1        # next positions to try when back‑tracking
+
+        while i < len(a) or j < len(b):
+            tok_a = a[i] if i < len(a) else None
+            tok_b = b[j] if j < len(b) else None
+
+            # Literal match or single‑token wildcard on either side
+            single = (tok_a == "*" and j < len(b)) or (tok_b == "*" and i < len(a))
+            if (tok_a is not None and tok_a == tok_b) or single:
+                i += 1
+                j += 1
+                continue
+
+            # Handle '>' in pattern‑A
+            if tok_a == ">":
+                if i != len(a) - 1 or j >= len(b):      # must be final & eat ≥1 token
+                    return False
+                i += 1               # step past '>'
+                j += 1               # consume first token in B
+                star_a_j = j         # remember where to start back‑tracking
+                continue
+
+            # Handle '>' in pattern‑B
+            if tok_b == ">":
+                if j != len(b) - 1 or i >= len(a):
+                    return False
+                j += 1
+                i += 1
+                star_b_j = i
+                continue
+
+            # Back‑track using the most recent '>' in A
+            if star_a_j != -1 and star_a_j <= len(b):
+                j = star_a_j
+                star_a_j += 1        # make A’s '>' absorb one more B‑token
+                continue
+
+            # Back‑track using the most recent '>' in B
+            if star_b_j != -1 and star_b_j <= len(a):
+                i = star_b_j
+                star_b_j += 1        # make B’s '>' absorb one more A‑token
+                continue
+
+            return False             # dead‑end
+
+        return True
+
+    def __strip_stream_hash(self, topic):
+        return topic.replace(f"{self.__topicHash}.", "")
+
+    def __execute_topic_callback(self, topic, data):
+        handler = self.__event_func[topic]
+
+        if inspect.iscoroutinefunction(handler):
+            if data:
+                asyncio.create_task(handler(data))
+            else:
+                asyncio.create_task(handler())
+        else:
+            loop = asyncio.get_running_loop()
+
+            if data:
+                loop.run_in_executor(
+                    self._pool,
+                    handler,
+                    data
+                )
+            else:
+                loop.run_in_executor(
+                    self._pool,
+                    handler
+                )
 
     def sleep(self, seconds):
         time.sleep(seconds)

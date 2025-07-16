@@ -9,7 +9,7 @@ realtime = Realtime({
      "api_key": os.getenv("api_key", None),
     "secret": os.getenv("secret", None)
 })
-realtime.init(staging=True, opts={
+realtime.init(staging=False, opts={
     "debug": True
 })
 
@@ -69,10 +69,16 @@ def on_message_resend(data):
     print(f"[IMPL] => MESSAGE RESEND {data}")
 
 def generic_handler(data):
+    realtime.sleep(10)
     print(f"[IMPL] => Generic Handler {data}")
 
 async def main():
     await realtime.on("hello", onHello)
+    await realtime.on("hello.*", generic_handler)
+    await realtime.on("hello.>", generic_handler)
+    await realtime.on("hello.hey.*", generic_handler)
+    await realtime.on("hello.hey.>", generic_handler)
+    await realtime.on("hello.hey.123", generic_handler)
     await realtime.on(Realtime.CONNECTED, onConnect)
     await realtime.on(Realtime.RECONNECT, on_reconnect)
     await realtime.on(Realtime.MESSAGE_RESEND, on_message_resend)

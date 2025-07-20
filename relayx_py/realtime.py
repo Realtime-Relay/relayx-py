@@ -33,6 +33,8 @@ class Realtime:
     __RECONNECTED = "RECONNECTED"
     __RECONN_FAIL = "RECONN_FAIL"
 
+    __reserved_topics = [CONNECTED, DISCONNECTED, RECONNECT, __RECONNECTED, __RECONNECTING, __RECONN_FAIL, MESSAGE_RESEND]
+
     __natsClient = None
     __jetstream = None
     __jsManager = None
@@ -53,6 +55,7 @@ class Realtime:
     __is_sending_latency = False
 
     __disconnect_time = None
+    __connect_called = False
 
     def __init__(self, config=None):
         if config is not None:
@@ -100,6 +103,9 @@ class Realtime:
         self.opts = opts
 
         if opts:
+            if type(opts) is not dict:
+                raise ValueError("$init not object => {}")
+            
             if "debug" in opts:
                 self.__debug = opts["debug"]
             else:
@@ -122,6 +128,8 @@ class Realtime:
                 "tls://api.relay-x.io:4222",
                 "tls://api.relay-x.io:4223"
             ]
+        
+        self.__log(self.__base_url)
             
 
     async def __get_namespace(self):
@@ -187,6 +195,9 @@ class Realtime:
         self.__is_sending_latency = False
 
     async def connect(self):
+        if self.__connect_called:
+            return
+
         async def __connect():
             options = {
                 "servers": self.__base_url,
@@ -208,6 +219,7 @@ class Realtime:
 
             self.__connected = True
             self.__disconnected = False
+            self.__reconnecting = False
 
             await self.__get_namespace()
 
@@ -228,9 +240,6 @@ class Realtime:
         self.__connected = False
         self.__disconnect_time = datetime.now(timezone.utc).isoformat()
 
-        if self.DISCONNECTED in self.__event_func:
-            self.__execute_topic_callback(self.DISCONNECTED, None)
-
         if not self.__manual_disconnect:
             # This was not a manual disconnect.
             # Reconnection attempts will be made
@@ -247,14 +256,12 @@ class Realtime:
         if self.RECONNECT in self.__event_func:
             self.__execute_topic_callback(self.RECONNECT, self.__RECONNECTED)
 
+        self.__consumer = None
+
         await self.__subscribe_to_topics()
 
         # Publish messages issued when client was in reconnection state
-        output = await self.__publish_messages_on_reconnect()
-
-        if len(output) > 0:
-            if self.MESSAGE_RESEND in self.__event_func:
-                self.__execute_topic_callback(self.MESSAGE_RESEND, output)
+        await self.__publish_messages_on_reconnect()
 
     async def __on_error(self, e):
         self.__log(f"There was an error: {e}")
@@ -267,29 +274,25 @@ class Realtime:
     async def __on_closed(self):
         self.__log("Connection is closed")
 
-        if self.__reconnected_attempt:
-            self.__on_reconnect_failed()
-
         self.__offline_message_buffer.clear()
         self.__disconnect_time = None
         self.__connected = False
+        self.__disconnected = True
+        self.__reconnecting = False
+        self.__connect_called = False
+
+        if self.DISCONNECTED in self.__event_func:
+            self.__execute_topic_callback(self.DISCONNECTED, None)
 
     async def __on_reconnect_attempt(self):
         self.__log(f"Reconnection attempt underway...")
 
         self.__connected = False
         self.__reconnected_attempt = True
+        self.__reconnecting = True
 
         if self.RECONNECT in self.__event_func:
             self.__execute_topic_callback(self.RECONNECT, self.__RECONNECTING)
-
-    def __on_reconnect_failed(self):
-        self.__log("Reconnection failed")
-
-        self.__reconnected_attempt = False
-
-        if self.RECONNECT in self.__event_func:
-            self.__event_func[self.RECONNECT](self.__RECONN_FAIL)
 
     async def close(self):
         """
@@ -325,7 +328,7 @@ class Realtime:
         if not self.is_topic_valid(topic):
             raise ValueError("$topic is not valid, use is_topic_valid($topic) to validate topic")
         
-        self.__is_message_valid(data)
+        self.is_message_valid(data)
 
         if self.__connected:
             message_id = str(uuid.uuid4())
@@ -338,7 +341,6 @@ class Realtime:
                 "start": int(datetime.now(timezone.utc).timestamp())
             }
 
-            # encoded = self.__encode_json(message)
             encoded = msgpack.packb(message)
 
             if topic not in self.__topic_map:
@@ -384,24 +386,20 @@ class Realtime:
         if not callable(func):
             raise ValueError("The callback must be a callable function.")
         
-        if topic not in self.__event_func:
-            self.__event_func[topic] = func
-        else:
+        if topic in self.__event_func or topic in self.__topic_map:
             return False
+        
+        self.__event_func[topic] = func
 
-        __temp_topic_map = self.__topic_map.copy()
-        __temp_topic_map += [self.CONNECTED, self.DISCONNECTED, self.RECONNECT, self.__RECONNECTED, 
-                                self.__RECONNECTING, self.__RECONN_FAIL, self.MESSAGE_RESEND]
-
-        if topic not in __temp_topic_map:
+        if topic not in self.__reserved_topics:
             if not self.is_topic_valid(topic):
                 self.__event_func.pop(topic)
                 raise ValueError("$topic is not valid, use is_topic_valid($topic) to validate topic")
 
             self.__topic_map.append(topic)
 
-        if self.__connected:
-            await self.__start_consumer()
+            if self.__connected:
+                await self.__start_consumer()
     
         return True  
 
@@ -443,6 +441,9 @@ class Realtime:
         if topic == "":
             raise ValueError("The topic must be NOT be an empty string.")
         
+        if not self.is_topic_valid(topic):
+            raise ValueError("The topic not valid. use is_topic_valid($topic)")
+        
         if start == None:
             raise ValueError("$start cannot be None.")
         
@@ -456,12 +457,15 @@ class Realtime:
             if start > end:
                 raise ValueError("$start > $end. $start must be lesser than $end")
 
-        self.__log(f"TIMESTAMP => {start.isoformat()}")
+        self.__log(f"TOPIC => {self.__get_stream_topic(topic)}")
+
+        if not self.__connected:
+            return []
 
         consumer = await self.__jetstream.subscribe(self.__get_stream_topic(topic), deliver_policy=nats_config.DeliverPolicy.BY_START_TIME, config=nats_config.ConsumerConfig(
+            name=f"python_{uuid.uuid4()}_history_consumer",
             opt_start_time=start.isoformat(),
             ack_policy=nats_config.AckPolicy.EXPLICIT,
-            name=f"{topic}_history_{uuid.uuid4()}"
         ))
 
         history = []
@@ -484,12 +488,19 @@ class Realtime:
                 # Decoding using msgpack
                 data = msgpack.unpackb(msg.data, raw=False)
 
-                history.append(data["message"])
+                history.append({
+                    "id": data["id"],
+                    "topic": data["room"],
+                    "message": data["message"],
+                    "timestamp": utc_timestamp
+                })
 
                 await msg.ack()
             except Exception as e:
                 self.__log(e)
                 break
+
+        await consumer.unsubscribe()
         
         return history
 
@@ -536,14 +547,14 @@ class Realtime:
                                                     stream=self.__get_stream_name(), 
                                                     cb=on_message,
                                                     config=nats_config.ConsumerConfig(
-                                                        name=f"consumer_{uuid.uuid4()}",
+                                                        name=f"python_{uuid.uuid4()}_consumer",
                                                         replay_policy=nats_config.ReplayPolicy.INSTANT,
                                                         deliver_policy=nats_config.DeliverPolicy.BY_START_TIME,
                                                         opt_start_time=startTime,
                                                         ack_policy=nats_config.AckPolicy.EXPLICIT
                                                     ))
 
-        self.__log(self.__consumer)
+        self.__log("Consumer is consuming")
 
     async def __log_latency(self, now, data):
         """
@@ -653,8 +664,10 @@ class Realtime:
             })
 
         self.__offline_message_buffer.clear()
-        
-        return message_sent_status
+
+        if len(message_sent_status) > 0:
+            if self.MESSAGE_RESEND in self.__event_func:
+                self.__execute_topic_callback(self.MESSAGE_RESEND, output)
     
     def encode_json(self, data):
         return json.dumps(data).encode('utf-8')
@@ -683,7 +696,7 @@ class Realtime:
         if self.__debug:
             print(msg)  # Replace with a logging system if necessary
 
-    def __is_message_valid(self, msg):
+    def is_message_valid(self, msg):
         if msg == None:
             raise ValueError("$msg cannot be None.")
         
@@ -803,7 +816,7 @@ class Realtime:
     def __strip_stream_hash(self, topic):
         return topic.replace(f"{self.__topicHash}.", "")
 
-    def __execute_topic_callback(self, topic, data):
+    def  __execute_topic_callback(self, topic, data):
         handler = self.__event_func[topic]
 
         if inspect.iscoroutinefunction(handler):

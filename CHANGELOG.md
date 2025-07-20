@@ -1,3 +1,6 @@
+V1.0.14
+- General requirements verfication
+
 V1.0.13
 - Wildcard pub / sub fixes
 

@@ -1,3 +1,6 @@
+V1.0.15
+- Subscribe callback change for consistency
+
 V1.0.14
 - General requirements verfication
 

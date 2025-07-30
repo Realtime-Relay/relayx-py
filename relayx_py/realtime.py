@@ -535,7 +535,7 @@ class Realtime:
                     self.__execute_topic_callback(top, {
                             "id": data["id"],
                             "topic": topic,
-                            "message": data["message"]
+                            "data": data["message"]
                         })
             
             self.__log(f"Message processed for topic: {topic}")

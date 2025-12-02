@@ -155,7 +155,7 @@ class Queue:
             raise ValueError("$topic cannot be an empty string")
 
         if not isinstance(topic, str):
-            raise ValueError(f"Expected $topic type -> string. Instead received -> {type(topic)}")
+            raise ValueError(f"Expected the topic type -> string. Instead received -> {type(topic)}")
 
         if not self.is_topic_valid(topic):
             raise ValueError("Invalid topic, use is_topic_valid($topic) to validate topic")
@@ -225,10 +225,10 @@ class Queue:
             raise ValueError("Invalid Topic!")
 
         if not callable(func):
-            raise ValueError(f"Expected $listener type -> function. Instead received -> {type(func)}")
+            raise ValueError(f"Expected the listener type -> function. Instead received -> {type(func)}")
 
         if not isinstance(topic, str):
-            raise ValueError(f"Expected $topic type -> string. Instead received -> {type(topic)}")
+            raise ValueError(f"Expected the topic type -> string. Instead received -> {type(topic)}")
 
         if topic in self.__event_func or topic in self.__topic_map:
             return False
@@ -260,7 +260,7 @@ class Queue:
             raise ValueError("$topic is null / undefined")
 
         if not isinstance(topic, str):
-            raise ValueError(f"Expected $topic type -> string. Instead received -> {type(topic)}")
+            raise ValueError(f"Expected the topic type -> string. Instead received -> {type(topic)}")
 
         self.__topic_map = [item for item in self.__topic_map if item != topic]
 
@@ -401,23 +401,27 @@ class Queue:
         self.__execute_method(on_message, consumer)
 
 
-    async def delete_consumer(self, topic):
-        """Delete a consumer for a topic."""
-        self.__log(topic)
-        consumer = self.__consumer_map.get(topic)
+    async def delete_consumer(self, name):
+        """Delete a consumer for a name."""
+
+        if name is None or name == "":
+            raise ValueError("$name cannot be None or empty")
 
         delete_result = False
+        consumer_info = None
 
-        if consumer is not None:
+        try:
+            consumer_info = await self.__jetstream.consumer_info(self.__get_queue_name(), name)
+        except Exception as e:
+            self.__log(e)
+
+            return False
+
+        if consumer_info != None:
             try:
-                delete_result = await consumer.delete()
-            except Exception:
-                delete_result = False
-        else:
-            delete_result = False
-
-        if topic in self.__consumer_map:
-            del self.__consumer_map[topic]
+                delete_result = await self.__jetstream.delete_consumer(self.__get_queue_name(), name)
+            except Exception as e:
+                self.__log(e)
 
         return delete_result
 

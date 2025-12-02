@@ -37,7 +37,7 @@ class Queue:
 
         self.__nats_client = config.get("nats_client")
         self.__jetstream = config.get("jetstream")
-        self.__jetstream_manager = None
+        self.__realtime = config.get("realtime")
         self.__consumer_map = {}
 
         self.__event_func = {}
@@ -57,7 +57,7 @@ class Queue:
 
         result = await self.__get_queue_namespace()
 
-        # await self.__init_connection_listener()
+        await self.__init_connection_listener()
 
         return result
 
@@ -110,30 +110,24 @@ class Queue:
     async def __init_connection_listener(self):
         """Connection listener to handle queue."""
         async def listen():
-            async for s in self.__nats_client.status():
-                status_type = s.type
+            while True:
+                status = self.__realtime.status()
 
-                if status_type == "disconnect":
-                    self.__log(f"client disconnected - {s.data}")
+                if status == "DISCONNECTED" or status == "CLOSED":
                     self.connected = False
-                elif status_type == "reconnect":
-                    self.__log("client reconnected -")
-                    self.__log(s.data)
-
+                elif status == "RECONNECTED":
                     self.reconnecting = False
                     self.connected = True
 
                     # Resend any messages sent while client was offline
                     await self.__publish_messages_on_reconnect()
-                elif status_type == "reconnecting":
-                    self.__log("client is attempting to reconnect")
-
+                elif status == "RECONNECTING":
                     self.reconnecting = True
                     self.connected = False
-                elif status_type == "stale_connection":
-                    self.__log("client has a stale connection")
+                
+                await self.sleep(3000)
 
-        asyncio.create_task(listen())
+        self.__execute_method(listen, None)
 
 
     async def publish(self, topic, data):
@@ -167,7 +161,6 @@ class Queue:
         message_id = str(uuid.uuid4())
 
         message = {
-            "client_id": self.__get_client_id(),
             "id": message_id,
             "room": topic,
             "message": data,
@@ -194,6 +187,7 @@ class Queue:
 
             return ack is not None
         else:
+            print("offline!")
             self.__offline_message_buffer.append({
                 "topic": topic,
                 "message": data
@@ -261,7 +255,7 @@ class Queue:
 
         if not isinstance(topic, str):
             raise ValueError(f"Expected the topic type -> string. Instead received -> {type(topic)}")
-
+        
         self.__topic_map = [item for item in self.__topic_map if item != topic]
 
         consumer = self.__consumer_map[topic]
@@ -333,18 +327,17 @@ class Queue:
                     self.__log(data)
 
                     # Push topic message to main thread
-                    if data.get("client_id") != self.__get_client_id():
-                        topic_match = self.__topic_pattern_matcher(topic, msg_topic)
+                    topic_match = self.__topic_pattern_matcher(topic, msg_topic)
 
-                        if topic_match:
-                            message = Message({
-                                "id": data.get("id"),
-                                "topic": msg_topic,
-                                "message": data.get("message"),
-                                "msg": msg
-                            })
+                    if topic_match:
+                        message = Message({
+                            "id": data.get("id"),
+                            "topic": msg_topic,
+                            "message": data.get("message"),
+                            "msg": msg
+                        })
 
-                            await self.__event_func[topic](message)
+                        await self.__event_func[topic](message)
                 except Exception as err:
                     self.__log(f"Consumer err {err}")
                     await msg.nak()
@@ -370,8 +363,6 @@ class Queue:
 
         if self.__check_var_ok(config.get("max_deliver")) and config.get("max_deliver", 0) >= 0 and isinstance(config.get("max_deliver"), int):
             opts["max_deliver"] = config.get("max_deliver")
-        else:
-            opts["max_deliver"] = -1
 
         if self.__check_var_ok(config.get("max_ack_pending")) and config.get("max_ack_pending", 0) >= 0 and isinstance(config.get("max_ack_pending"), int):
             opts["max_ack_pending"] = config.get("max_ack_pending")
@@ -383,10 +374,9 @@ class Queue:
         except Exception as e:
             self.__log(e)
 
-        try:
-            if consumer_info != None:
-                opts.pop("deliver_policy")
+        self.__log(consumer_info != None)
 
+        try:
             await self.__jetstream.add_consumer(stream=self.__get_queue_name(), config=nats_config.ConsumerConfig(**opts))
 
             self.__log(f"Consumer {"created" if consumer_info == None else "Updated"}")
@@ -427,9 +417,42 @@ class Queue:
 
 
     # Utility functions
-    def __get_client_id(self):
-        """Get the client ID."""
-        return self.__nats_client.client_id if hasattr(self.__nats_client, 'client_id') else None
+    def get_callback_topics(self, topic):
+        """
+        Return all subscription-patterns (callbacks) that match a concrete topic,
+        excluding the five control events.
+
+        Parameters
+        ----------
+        topic : str
+            The concrete subject your client just received / published.
+
+        Returns
+        -------
+        List[str]
+            Every pattern key from ``self._event_func`` that matches *topic*
+            and is **not** one of the control events.
+        """
+        ignore = {
+            self.CONNECTED,
+            self.RECONNECT,
+            self.MESSAGE_RESEND,
+            self.DISCONNECTED,
+            self.__RECONNECTED,
+            self.__RECONNECTING,
+            self.__RECONN_FAIL
+        }
+
+        valid_topics = []
+
+        for pattern in self.__event_func.keys():
+            if pattern in ignore:
+                continue
+
+            if self.__topic_pattern_matcher(pattern, topic):
+                valid_topics.append(pattern)
+
+        return valid_topics
 
 
     def is_topic_valid(self, topic):
@@ -525,65 +548,66 @@ class Queue:
 
     def __topic_pattern_matcher(self, pattern_a, pattern_b):
         """
-        Check if two NATS-style subject patterns could match the same concrete subject.
+        Return True when two NATS-style subject patterns could match
+        the same concrete subject.
 
-        Rules:
-        - Literal tokens must be equal
-        - '*' => exactly one token
-        - '>' => one or more tokens and must be final token
-        - '$' never allowed
+        Rules
+        -----
+        · Literal tokens must be equal.
+        · '*'  ⇒ exactly one token (either side).
+        · '>'  ⇒ one‑or‑more tokens AND must be the final token in its pattern.
+        · '$'  never allowed (assume caller already validated with is_valid_subject).
+
+        The algorithm walks both token lists with pointers and back‑tracks
+        when it finds a '>' that can absorb additional tokens.
         """
         a = pattern_a.split(".")
         b = pattern_b.split(".")
-
-        i = j = 0  # cursors in a & b
-        star_ai = star_aj = -1  # last '>' position in A and token count
-        star_bi = star_bj = -1  # same for pattern B
+        i = j = 0                       # cursors
+        star_a_j = star_b_j = -1        # next positions to try when back‑tracking
 
         while i < len(a) or j < len(b):
             tok_a = a[i] if i < len(a) else None
             tok_b = b[j] if j < len(b) else None
 
-            # Literal match or single-token wildcard
-            single_wildcard = (tok_a == "*" and j < len(b)) or (tok_b == "*" and i < len(a))
-
-            if (tok_a is not None and tok_a == tok_b) or single_wildcard:
-                i += 1
-                j += 1
-                continue
-
-            # Multi-token wildcard ">" must be final
+            # Handle '>' in pattern‑A (check before wildcard matching)
             if tok_a == ">":
-                if i != len(a) - 1 or j >= len(b):
+                if i != len(a) - 1 or j >= len(b):      # must be final & eat ≥1 token
                     return False
-                star_ai = i
-                i += 1
-                star_aj = j + 1
-                j += 1
+                i += 1               # step past '>'
+                j += 1               # consume first token in B
+                star_a_j = j         # remember where to start back‑tracking
                 continue
 
+            # Handle '>' in pattern‑B (check before wildcard matching)
             if tok_b == ">":
                 if j != len(b) - 1 or i >= len(a):
                     return False
-                star_bi = j
                 j += 1
-                star_bj = i + 1
                 i += 1
+                star_b_j = i
                 continue
 
-            # Backtrack using last '>'
-            if star_ai != -1:
-                j = star_aj
-                star_aj += 1
+            # Literal match or single‑token wildcard on either side
+            single = (tok_a == "*" and j < len(b)) or (tok_b == "*" and i < len(a))
+            if (tok_a is not None and tok_a == tok_b) or single:
+                i += 1
+                j += 1
                 continue
 
-            if star_bi != -1:
-                i = star_bj
-                star_bj += 1
+            # Back‑track using the most recent '>' in A
+            if star_a_j != -1 and star_a_j <= len(b):
+                j = star_a_j
+                star_a_j += 1        # make A's '>' absorb one more B‑token
                 continue
 
-            # Dead end
-            return False
+            # Back‑track using the most recent '>' in B
+            if star_b_j != -1 and star_b_j <= len(a):
+                i = star_b_j
+                star_b_j += 1        # make B's '>' absorb one more A‑token
+                continue
+
+            return False             # dead‑end
 
         return True
 

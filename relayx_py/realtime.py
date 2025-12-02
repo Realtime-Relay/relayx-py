@@ -224,6 +224,9 @@ class Realtime:
 
             self.__natsClient = await nats.connect(**options)
             self.__jetstream = self.__natsClient.jetstream()
+
+            self.__connection_status = "CONNECTED"
+
             self.__log("Connected to Relay!")
 
             self.__connected = True
@@ -246,6 +249,9 @@ class Realtime:
 
     async def __on_disconnect(self):
         self.__log("Disconnected from server")
+
+        self.__connection_status = "DISCONNECTED"
+
         self.__disconnected = True
         self.__connected = False
         self.__disconnect_time = datetime.now(timezone.utc).isoformat()
@@ -264,6 +270,8 @@ class Realtime:
         self.__reconnecting = False
         self.__connected = True
 
+        self.__connection_status = "RECONNECTED"
+
         if self.RECONNECT in self.__event_func:
             self.__execute_topic_callback(self.RECONNECT, self.__RECONNECTED)
 
@@ -276,7 +284,7 @@ class Realtime:
 
 
     async def __on_error(self, e):
-        print(e)
+        self.__log(e)
         self.__error_logging.log_error(e)
 
         # Reconnecting error catch
@@ -290,8 +298,11 @@ class Realtime:
                 if self.__event_func[self.CONNECTED]:
                     self.__execute_topic_callback(self.CONNECTED, False)
 
+
     async def __on_closed(self):
         self.__log("Connection is closed")
+
+        self.__connection_status = "CLOSED"
 
         self.__offline_message_buffer.clear()
         self.__disconnect_time = None
@@ -305,8 +316,11 @@ class Realtime:
         if self.DISCONNECTED in self.__event_func:
             self.__execute_topic_callback(self.DISCONNECTED, None)
 
+
     async def __on_reconnect_attempt(self):
         self.__log(f"Reconnection attempt underway...")
+
+        self.__connection_status = "RECONNECTING"
 
         self.__connected = False
         self.__reconnected_attempt = True
@@ -359,7 +373,6 @@ class Realtime:
             message_id = str(uuid.uuid4())
 
             message = {
-                "client_id": self.__get_client_id(),
                 "id": message_id,
                 "room": topic,
                 "message": data,
@@ -568,15 +581,14 @@ class Realtime:
 
             topic = self.__strip_stream_hash(msg.subject)
 
-            if data["client_id"] != self.__get_client_id():
-                topics = self.get_callback_topics(topic)
+            topics = self.get_callback_topics(topic)
 
-                for top in topics:
-                    self.__execute_topic_callback(top, {
-                            "id": data["id"],
-                            "topic": topic,
-                            "data": data["message"]
-                        })
+            for top in topics:
+                self.__execute_topic_callback(top, {
+                        "id": data["id"],
+                        "topic": topic,
+                        "data": data["message"]
+                    })
             
             self.__log(f"Message processed for topic: {topic}")
             await self.__log_latency(now, data)
@@ -660,13 +672,16 @@ class Realtime:
             "jetstream": self.__jetstream,
             "nats_client": self.__natsClient,
             "api_key": self.api_key,
-            "debug": self.__debug
+            "debug": self.__debug,
+            "realtime": self
         })
 
         initResult = await queue_obj.initialize(queue_id)
 
         return queue_obj if initResult else None
 
+    def status(self):
+        return self.__connection_status
 
     # Utility functions
     def is_topic_valid(self, topic):
@@ -790,7 +805,7 @@ class Realtime:
 
     def get_callback_topics(self, topic):
         """
-        Return all subscription‑patterns (callbacks) that match a concrete topic,
+        Return all subscription-patterns (callbacks) that match a concrete topic,
         excluding the five control events.
 
         Parameters
@@ -828,7 +843,7 @@ class Realtime:
 
     def topic_pattern_matcher(self, pattern_a, pattern_b):
         """
-        Return True when two NATS‑style subject patterns could match
+        Return True when two NATS-style subject patterns could match
         the same concrete subject.
 
         Rules
@@ -850,14 +865,7 @@ class Realtime:
             tok_a = a[i] if i < len(a) else None
             tok_b = b[j] if j < len(b) else None
 
-            # Literal match or single‑token wildcard on either side
-            single = (tok_a == "*" and j < len(b)) or (tok_b == "*" and i < len(a))
-            if (tok_a is not None and tok_a == tok_b) or single:
-                i += 1
-                j += 1
-                continue
-
-            # Handle '>' in pattern‑A
+            # Handle '>' in pattern‑A (check before wildcard matching)
             if tok_a == ">":
                 if i != len(a) - 1 or j >= len(b):      # must be final & eat ≥1 token
                     return False
@@ -866,7 +874,7 @@ class Realtime:
                 star_a_j = j         # remember where to start back‑tracking
                 continue
 
-            # Handle '>' in pattern‑B
+            # Handle '>' in pattern‑B (check before wildcard matching)
             if tok_b == ">":
                 if j != len(b) - 1 or i >= len(a):
                     return False
@@ -875,16 +883,23 @@ class Realtime:
                 star_b_j = i
                 continue
 
+            # Literal match or single‑token wildcard on either side
+            single = (tok_a == "*" and j < len(b)) or (tok_b == "*" and i < len(a))
+            if (tok_a is not None and tok_a == tok_b) or single:
+                i += 1
+                j += 1
+                continue
+
             # Back‑track using the most recent '>' in A
             if star_a_j != -1 and star_a_j <= len(b):
                 j = star_a_j
-                star_a_j += 1        # make A’s '>' absorb one more B‑token
+                star_a_j += 1        # make A's '>' absorb one more B‑token
                 continue
 
             # Back‑track using the most recent '>' in B
             if star_b_j != -1 and star_b_j <= len(a):
                 i = star_b_j
-                star_b_j += 1        # make B’s '>' absorb one more A‑token
+                star_b_j += 1        # make B's '>' absorb one more A‑token
                 continue
 
             return False             # dead‑end

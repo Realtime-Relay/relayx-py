@@ -18,9 +18,10 @@ async def onHello(data):
 
 async def queue_cb(data):
     print("Queue Data!")
+    print(data.topic)
     print(data.message)
 
-    # await data.ack()
+    await data.ack()
 
 async def onConnect(status):
     print("[IMPL] Connected!")
@@ -39,8 +40,24 @@ async def onConnect(status):
 
     await queue.consume(config, queue_cb)
 
+    config = {
+        "name": "Test4341",
+        "group": "test-group",
+        "topic": "queue.test"
+    }
+    await queue.consume(config, queue_cb)
+
+    config = {
+        "name": "Test4342",
+        "group": "test-group",
+        "topic": "queue.*.123"
+    }
+    await queue.consume(config, queue_cb)
+
     while text != "exit":
         text = await loop.run_in_executor(None, input, "Enter Message: ")
+
+        print(f"Message => {text}")
 
         if text == "exit":
             sys.exit(0)
@@ -75,6 +92,9 @@ async def onConnect(status):
             del_result = await queue.delete_consumer(name)
 
             print(del_result)
+        elif text == "detatch":
+            topic = await loop.run_in_executor(None, input, "Enter Topic: ")
+            await queue.detach_consumer(topic)
         else:
             topic = input("Enter topic: ")
             ack = await queue.publish(topic, {
@@ -94,12 +114,12 @@ def generic_handler(data):
     print(f"[IMPL] => Generic Handler {data}")
 
 async def main():
-    await realtime.on("hello", onHello)
-    await realtime.on("hello.*", generic_handler)
-    await realtime.on("hello.>", generic_handler)
-    await realtime.on("hello.hey.*", generic_handler)
-    await realtime.on("hello.hey.>", generic_handler)
-    await realtime.on("hello.hey.123", generic_handler)
+    # await realtime.on("hello", onHello)
+    # await realtime.on("hello.*", generic_handler)
+    # await realtime.on("hello.>", generic_handler)
+    # await realtime.on("hello.hey.*", generic_handler)
+    # await realtime.on("hello.hey.>", generic_handler)
+    # await realtime.on("hello.hey.123", generic_handler)
     await realtime.on(Realtime.CONNECTED, onConnect)
     await realtime.on(Realtime.RECONNECT, on_reconnect)
     await realtime.on(Realtime.MESSAGE_RESEND, on_message_resend)

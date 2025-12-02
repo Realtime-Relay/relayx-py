@@ -100,7 +100,7 @@ class TestRealTime:
             "secret": os.getenv("secret", None)
         })
 
-        realtime.init(staging=False, opts={
+        realtime.init(staging=True, opts={
             "debug": True
         })
 
@@ -150,7 +150,7 @@ class TestRealTime:
             "secret": os.getenv("secret", None)
         })
 
-        realtime.init(staging=False, opts={
+        realtime.init(staging=True, opts={
             "debug": True
         })
 
@@ -178,14 +178,14 @@ class TestRealTime:
             "secret": os.getenv("secret", None)
         })
 
-        realtime.init(staging=False, opts={
+        realtime.init(staging=True, opts={
             "debug": True
         })
 
         async def generic_handler(data):
             print(f"[IMPL] => Generic Handler {json.dumps(data, indent=4)}")
 
-        async def onConnect():
+        async def onConnect(status):
             print("Connected!")
 
             with pytest.raises(ValueError):
@@ -405,6 +405,7 @@ class TestRealTime:
             ("foo-bar_*",           "foo-bar_*",                True),
             ("order-*",             "order-123",                False),
             ("hello.hey.*",         "hello.hey.>",              True),
+            ("queue.>",             "queue.*.123",              True),
         ]
 
         realtime = Realtime({

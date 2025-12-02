@@ -34,9 +34,7 @@ async def onConnect(status):
     config = {
         "name": "Test434",
         "group": "test-group",
-        "topic": "queue.>",
-        "ack_wait": 10,
-        "max_deliver": 3
+        "topic": "queue.>"
     }
 
     await queue.consume(config, queue_cb)
@@ -48,7 +46,7 @@ async def onConnect(status):
             sys.exit(0)
         elif text == "off":
             topic = await loop.run_in_executor(None, input, "Enter topic: ")
-            await realtime.off(topic)
+            await queue.detach_consumer(topic)
         elif text == "on":
             topic = await loop.run_in_executor(None, input, "Enter topic: ")
             await realtime.on(topic, generic_handler)

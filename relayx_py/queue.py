@@ -264,6 +264,10 @@ class Queue:
 
         self.__topic_map = [item for item in self.__topic_map if item != topic]
 
+        consumer = self.__consumer_map[topic]
+
+        await consumer.unsubscribe()
+
         if topic in self.__event_func:
             del self.__event_func[topic]
 

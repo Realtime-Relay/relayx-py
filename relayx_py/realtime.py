@@ -7,6 +7,7 @@ import nats
 from nats.aio.client import RawCredentials
 from concurrent.futures import ThreadPoolExecutor
 import nats.js.api as nats_config
+from nats.js.errors import ServiceUnavailableError
 import json
 import re
 import inspect
@@ -17,6 +18,8 @@ import socket
 from functools import wraps
 import os
 import re
+from relayx_py.queue import Queue
+from relayx_py.utils import ErrorLogging
 
 class Realtime:
     __event_func = {}
@@ -47,6 +50,8 @@ class Realtime:
     __connected = False
     __reconnected_attempt = False
     __manual_disconnect = False
+
+    __auth_err_logged = False
 
     __offline_message_buffer = []
 
@@ -88,6 +93,8 @@ class Realtime:
 
         self.__namespace = ""
         self.__topicHash = ""
+
+        self.__error_logging = ErrorLogging()
 
         self._pool = ThreadPoolExecutor(max_workers=1000)
 
@@ -159,7 +166,8 @@ class Realtime:
                 raise ValueError("Namespace not found")
         else:
             raise ValueError("Namespace not found")
-        
+
+
     async def __push_latency(self, data):
         """
         Gets the __namespace of the user using a service
@@ -193,6 +201,7 @@ class Realtime:
             self.__log("Repsonse is None")
         
         self.__is_sending_latency = False
+
 
     async def connect(self):
         if self.__connect_called:
@@ -228,11 +237,12 @@ class Realtime:
             # Call the callback function if present
             if self.CONNECTED in self.__event_func:
                 if self.__event_func[self.CONNECTED]:
-                    self.__execute_topic_callback(self.CONNECTED, None)
+                    self.__execute_topic_callback(self.CONNECTED, True)
 
             await self.quit_event.wait()
 
         await self.__run_in_background(__connect)
+
 
     async def __on_disconnect(self):
         self.__log("Disconnected from server")
@@ -247,6 +257,7 @@ class Realtime:
                 await self.__on_reconnect_attempt()
             else:
                 self.__on_reconnect_attempt()
+
 
     async def __on_reconnect(self):
         self.__log("Reconnected!")
@@ -263,13 +274,21 @@ class Realtime:
         # Publish messages issued when client was in reconnection state
         await self.__publish_messages_on_reconnect()
 
+
     async def __on_error(self, e):
-        self.__log(f"There was an error: {e}")
+        print(e)
+        self.__error_logging.log_error(e)
 
         # Reconnecting error catch
         if str(e) == "":
             if self.RECONNECT in self.__event_func:
                 self.__execute_topic_callback(self.RECONNECT, self.__RECONNECTING)
+        elif str(e) == "Authorization Violation" and not self.__auth_err_logged:
+            self.__auth_err_logged = True
+
+            if self.CONNECTED in self.__event_func:
+                if self.__event_func[self.CONNECTED]:
+                    self.__execute_topic_callback(self.CONNECTED, False)
 
     async def __on_closed(self):
         self.__log("Connection is closed")
@@ -280,6 +299,8 @@ class Realtime:
         self.__disconnected = True
         self.__reconnecting = False
         self.__connect_called = False
+
+        self.__error_logging.clear()
 
         if self.DISCONNECTED in self.__event_func:
             self.__execute_topic_callback(self.DISCONNECTED, None)
@@ -293,6 +314,7 @@ class Realtime:
 
         if self.RECONNECT in self.__event_func:
             self.__execute_topic_callback(self.RECONNECT, self.__RECONNECTING)
+
 
     async def close(self):
         """
@@ -315,6 +337,7 @@ class Realtime:
 
             self.__log("None / null socket object, cannot close connection")
 
+
     async def publish(self, topic, data):
         if topic == None:
             raise ValueError("$topic cannot be None.")
@@ -329,6 +352,8 @@ class Realtime:
             raise ValueError("$topic is not valid, use is_topic_valid($topic) to validate topic")
         
         self.is_message_valid(data)
+
+        start = datetime.now(timezone.utc).timestamp()
 
         if self.__connected:
             message_id = str(uuid.uuid4())
@@ -350,9 +375,18 @@ class Realtime:
 
             topic = self.__get_stream_topic(topic)
             self.__log(f"Publishing to topic => {self.__get_stream_topic(topic)}")
-            
-            ack = await self.__jetstream.publish(topic, encoded)
-            self.__log(f"Publish ack => {ack}")
+
+            ack = None
+
+            try:
+                ack = await self.__jetstream.publish(topic, encoded)
+                self.__log("Publish Ack =>")
+                self.__log(ack)
+
+                latency = (datetime.now(timezone.utc).timestamp() * 1000) - start
+                self.__log(f"Latency => {latency} ms")
+            except ServiceUnavailableError as err:
+                self.__error_logging.log_error(err)
 
             return ack != None
         else:
@@ -362,6 +396,7 @@ class Realtime:
             })
 
             return False
+
 
     async def on(self, topic, func):
         """
@@ -403,6 +438,7 @@ class Realtime:
     
         return True  
 
+
     async def off(self, topic):
         """
         Unregisters a callback function for a given topic or event.
@@ -430,6 +466,7 @@ class Realtime:
             return True
         else:
             return False
+
 
     async def history(self, topic, start=None, end=None):
         if topic == None:
@@ -504,15 +541,18 @@ class Realtime:
         
         return history
 
+
     async def __delete_consumer(self):
         if self.__consumer:
             await self.__consumer.unsubscribe()
 
         return True
 
+
     async def __subscribe_to_topics(self):
         if len(self.__topic_map) > 0:
             await self.__start_consumer()
+
 
     async def __start_consumer(self):
         if self.__consumer is not None:
@@ -556,6 +596,7 @@ class Realtime:
 
         self.__log("Consumer is consuming")
 
+
     async def __log_latency(self, now, data):
         """
         Logs latency data to the server.
@@ -587,6 +628,7 @@ class Realtime:
                 "history": self.__latency.copy()
             })
 
+
     async def __delayed_latency_push(self, time_zone):
         await asyncio.sleep(30)
         self.__log("setTimeout called")
@@ -601,6 +643,30 @@ class Realtime:
             self.__log("No latency data to push")
 
         self.__latency_push_task = None
+
+
+    # Queue
+    async def init_queue(self, queue_id):
+        if not self.__connected:
+            self.__log("Not connected to relayX network. Skipping queue init")
+
+            return None
+
+        self.__log("Validating queue ID...")
+        if queue_id == None or queue_id == "":
+            raise ValueError("$queue_id cannot be None or empty")
+        
+        queue_obj = Queue({
+            "jetstream": self.__jetstream,
+            "nats_client": self.__natsClient,
+            "api_key": self.api_key,
+            "debug": self.__debug
+        })
+
+        initResult = await queue_obj.initialize(queue_id)
+
+        return queue_obj if initResult else None
+
 
     # Utility functions
     def is_topic_valid(self, topic):
@@ -622,10 +688,12 @@ class Realtime:
             return array_check and space_star_check
         else:
             return False
-        
+
+
     def __get_client_id(self):
         return self.__natsClient.client_id
-    
+
+
     def __retry_till_success(self, func, retries, delay, *args):
         method_output = None
         success = False
@@ -651,6 +719,7 @@ class Realtime:
     
         return method_output
 
+
     async def __publish_messages_on_reconnect(self):
         message_sent_status = []
 
@@ -668,23 +737,28 @@ class Realtime:
         if len(message_sent_status) > 0:
             if self.MESSAGE_RESEND in self.__event_func:
                 self.__execute_topic_callback(self.MESSAGE_RESEND, output)
-    
+
+
     def encode_json(self, data):
         return json.dumps(data).encode('utf-8')
-    
+
+
     def __get_stream_name(self):
         if self.__namespace:
             return f"{self.__namespace}_stream"
         else:
             self.close()
             raise ValueError("$namespace is None, Cannot initialize program with None $namespace")
-    
+
+
     def __get_stream_topic(self, topic):
         return f"{self.__topicHash}.{topic}"
+
 
     async def __run_in_background(self, func):
         task = asyncio.create_task(func())
         await task
+
 
     def __encode_json(self, data):
         try:
@@ -692,9 +766,11 @@ class Realtime:
         except Exception as e:
             raise ValueError(f"Error encoding JSON: {e}")
 
+
     def __log(self, msg):
         if self.__debug:
             print(msg)  # Replace with a logging system if necessary
+
 
     def is_message_valid(self, msg):
         if msg == None:
@@ -710,6 +786,7 @@ class Realtime:
             return True
         
         return False
+
 
     def get_callback_topics(self, topic):
         """
@@ -747,6 +824,7 @@ class Realtime:
                 valid_topics.append(pattern)
 
         return valid_topics
+
 
     def topic_pattern_matcher(self, pattern_a, pattern_b):
         """
@@ -813,10 +891,12 @@ class Realtime:
 
         return True
 
+
     def __strip_stream_hash(self, topic):
         return topic.replace(f"{self.__topicHash}.", "")
 
-    def  __execute_topic_callback(self, topic, data):
+
+    def __execute_topic_callback(self, topic, data):
         handler = self.__event_func[topic]
 
         if inspect.iscoroutinefunction(handler):
@@ -839,8 +919,10 @@ class Realtime:
                     handler
                 )
 
+
     def sleep(self, seconds):
         time.sleep(seconds)
+
 
     def __getCreds(self):
         # To prevent \r\n from windows
@@ -863,6 +945,7 @@ NKEYs are sensitive and should be treated as secrets.
 *************************************************************
 """.strip()
     
+
     def __initDNSSpoof(self):
         self.__log("Init DNS Spoofing")
         _real_getaddrinfo = socket.getaddrinfo

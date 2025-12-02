@@ -6,22 +6,40 @@ import json
 from datetime import datetime, timedelta, UTC, timezone
 
 realtime = Realtime({
-     "api_key": os.getenv("api_key", None),
-    "secret": os.getenv("secret", None)
+     "api_key": "eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJhdWQiOiJOQVRTIiwibmFtZSI6IjY5MmFkY2JkYWY1ZWQ5ZDU1ZTFiMWVjZiIsInN1YiI6IlVBM0JERzc0QVhUVEVMNlZONlhSNUpWMkNMWE8yVUFHSTVLNlNWVkJXU1NES0c2T1dIN1FRN0syIiwibmF0cyI6eyJkYXRhIjotMSwicGF5bG9hZCI6LTEsInN1YnMiOi0xLCJwdWIiOnsiZGVueSI6WyI-Il19LCJzdWIiOnsiZGVueSI6WyI-Il19LCJvcmdfZGF0YSI6eyJvcmdfaWQiOiI2OTI1ZTAzMTFiNjFkNDljZGVjMDMyNzgiLCJ2YWxpZGl0eV9rZXkiOiI4NTQ1NzY1Mi0wMWNiLTRlYWEtOGZkMi05MWRmZmE2NTJiZDciLCJyb2xlIjoidXNlciIsImFwaV9rZXlfaWQiOiI2OTJhZGNiZGFmNWVkOWQ1NWUxYjFlY2YiLCJlbnYiOiJ0ZXN0In0sImlzc3Vlcl9hY2NvdW50IjoiQUFZWENCNVZHR0tDSlRKRkZJRUY3WVMzUFZBNk1PQVRYRVRRSDdMM0hXT01TNVJTSFRQWFJCSEsiLCJ0eXBlIjoidXNlciIsInZlcnNpb24iOjJ9LCJpc3MiOiJBQVlYQ0I1VkdHS0NKVEpGRklFRjdZUzNQVkE2TU9BVFhFVFFIN0wzSFdPTVM1UlNIVFBYUkJISyIsImlhdCI6MTc2NDQxNjcwMiwianRpIjoiaU5hLzBhek9GN3hZak9aUmpYbEE5RE1jQ3JVL2FEQ0YxWmU1YlRibXk4L2pVYUpEanFBRGpTd2hGRmREcVlXS2VjeWZ4Z1VIWlhiWnJKYW1kWGRkSnc9PSJ9.PkbEkqW_rQ4iMX_BJPH6Qio3AluAo0c-VYwnobnybiCUc7PKn1bOWDuUbmIrhNr8v_fwcWmMGS2v_Na7u8SpCA",
+    "secret": "SUAFR63MY4H7HB7YGHJJHE6HKCAGPAXKSSY4IGGIZHQ4A4WGXV7XSKMQ2Y"
 })
-realtime.init(staging=False, opts={
+realtime.init(staging=True, opts={
     "debug": True
 })
 
 async def onHello(data):
     print(json.dumps(data, indent=4))
 
-async def onConnect():
+async def queue_cb(data):
+    print("Queue Data!")
+    print(data.message)
+
+    # await data.ack()
+
+async def onConnect(status):
     print("[IMPL] Connected!")
 
     text = ""
 
     loop = asyncio.get_event_loop()
+
+    queue = await realtime.init_queue("692adca3af5ed9d55e1b1ece")
+
+    config = {
+        "name": "Test434",
+        "group": "test-group",
+        "topic": "queue.>",
+        "ack_wait": 10,
+        "max_deliver": 3
+    }
+
+    await queue.consume(config, queue_cb)
 
     while text != "exit":
         text = await loop.run_in_executor(None, input, "Enter Message: ")
@@ -56,7 +74,7 @@ async def onConnect():
             print(history)
         else:
             topic = input("Enter topic: ")
-            ack = await realtime.publish(topic, {
+            ack = await queue.publish(topic, {
                 "message": text
             })
 

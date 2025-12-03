@@ -9,8 +9,9 @@ class ErrorLogging:
     def __init__(self):
         self.__auth_err_logged = False
 
-    def log_error(self, err):
+    def log_error(self, data):
         code = None
+        err = data["err"]
 
         if type(err) == ServiceUnavailableError:
             code = err.err_code
@@ -31,25 +32,25 @@ class ErrorLogging:
 
         # Permission violation check
         if "permissions violation" in err:
-
+            user_op = data["op"]
+            
             match = re.search(r'"([^"]*)"', err)
             topic = ""
             
-            if match:
-                temp_topic = match.group(1)
-                topic_parts = temp_topic.split(".")
+            if user_op == "publish":
+                if match:
+                    temp_topic = match.group(1)
+                    topic_parts = temp_topic.split(".")
 
-                topic = ""
+                    topic = ""
 
-                for i, v in enumerate(topic_parts):
-                    if i > 1:
-                        if i < len(topic_parts) - 1:
-                            topic += f"{v}."
-                        else:
-                            topic += v
+                    for i, v in enumerate(topic_parts):
+                        if i > 1:
+                            if i < len(topic_parts) - 1:
+                                topic += f"{v}."
+                            else:
+                                topic += v
 
-            
-            if "publish" in err:
                 # This is a publish permissions violation!
                 data = [
                     ["Event", "Publish Permissions Violation"],
@@ -59,7 +60,20 @@ class ErrorLogging:
                 ]
 
                 print(tabulate.tabulate(data, ["Type", "Data"], tablefmt="grid"))
-            elif "subscribe" in err:
+            elif user_op == "subscribe":
+                if match:
+                    temp_topic = match.group(1)
+                    topic_parts = temp_topic.split(".")
+
+                    topic = ""
+
+                    for i, v in enumerate(topic_parts):
+                        if i > 5:
+                            if i < len(topic_parts) - 1:
+                                topic += f"{v}."
+                            else:
+                                topic += v
+
                 # This is a subscription permissions violation!
                 data = [
                     ["Event", "Subscription Permissions Violation"],

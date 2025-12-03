@@ -114,12 +114,12 @@ def generic_handler(data):
     print(f"[IMPL] => Generic Handler {data}")
 
 async def main():
-    # await realtime.on("hello", onHello)
-    # await realtime.on("hello.*", generic_handler)
-    # await realtime.on("hello.>", generic_handler)
-    # await realtime.on("hello.hey.*", generic_handler)
-    # await realtime.on("hello.hey.>", generic_handler)
-    # await realtime.on("hello.hey.123", generic_handler)
+    await realtime.on("hello", onHello)
+    await realtime.on("hello.*", generic_handler)
+    await realtime.on("hello.>", generic_handler)
+    await realtime.on("hello.hey.*", generic_handler)
+    await realtime.on("hello.hey.>", generic_handler)
+    await realtime.on("hello.hey.123", generic_handler)
     await realtime.on(Realtime.CONNECTED, onConnect)
     await realtime.on(Realtime.RECONNECT, on_reconnect)
     await realtime.on(Realtime.MESSAGE_RESEND, on_message_resend)

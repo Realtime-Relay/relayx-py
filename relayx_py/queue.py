@@ -509,6 +509,9 @@ class Queue:
 
         if not config.get("topic"):
             raise ValueError("$config.topic (subscribe config) cannot be null / undefined")
+        
+        if not config.get("group"):
+            raise ValueError("$config.group (subscribe config) cannot be null / undefined")
 
 
     def __is_json(self, data):

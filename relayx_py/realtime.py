@@ -285,7 +285,13 @@ class Realtime:
 
     async def __on_error(self, e):
         self.__log(e)
-        self.__error_logging.log_error(e)
+
+        is_subscribe = "consumer.create." in str(e)
+
+        self.__error_logging.log_error({
+                    "err": e,
+                    "op": "subscribe" if is_subscribe else "publish"
+                })
 
         # Reconnecting error catch
         if str(e) == "":
@@ -399,7 +405,10 @@ class Realtime:
                 latency = (datetime.now(timezone.utc).timestamp() * 1000) - start
                 self.__log(f"Latency => {latency} ms")
             except ServiceUnavailableError as err:
-                self.__error_logging.log_error(err)
+                self.__error_logging.log_error({
+                    "err": err,
+                    "op": "publish"
+                })
 
             return ack != None
         else:

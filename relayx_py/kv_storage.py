@@ -75,7 +75,7 @@ class KVStore:
         self.__logger.log(f"Creating KV pair for {key}")
 
         try:
-            await self.__kv_store.delete(key)
+            await self.__kv_store.purge(key)
         except:
             pass
 

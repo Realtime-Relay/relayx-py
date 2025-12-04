@@ -72,6 +72,8 @@ async def onConnect(status):
         await kv_store.delete(k)
         print(f"{k} delted")
 
+    keys = await kv_store.keys()
+    print(keys)
     
     queue = await realtime.init_queue("692adca3af5ed9d55e1b1ece")
 

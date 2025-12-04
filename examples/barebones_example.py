@@ -8,8 +8,11 @@ realtime = Realtime({
     "secret": os.getenv("secret", None)
 })
 
-realtime.init(staging=True, opts={
-    "debug": True
+realtime.init({
+    "staging": True,
+    "opts": {
+        "debug": True
+    }
 })
 
 # Initialization of topic listeners go here... (look at examples/example_chat.js for full implementation)

@@ -83,6 +83,22 @@ class ErrorLogging:
                 ]
 
                 print(tabulate.tabulate(data, ["Type", "Data"], tablefmt="grid"))
+            elif user_op == "kv_read":
+                data = [
+                    ["Event", "KV Read Failure"],
+                    ["Description", f"User is not permitted to read from KV Store"],
+                    ["Docs to Solve Issue", "<>"]
+                ]
+
+                print(tabulate.tabulate(data, ["Type", "Data"], tablefmt="grid"))
+            elif user_op == "kv_write":
+                data = [
+                    ["Event", "KV Write / Delete Failure"],
+                    ["Description", f"User is not permitted to write / delete to KV Store"],
+                    ["Docs to Solve Issue", "<>"]
+                ]
+
+                print(tabulate.tabulate(data, ["Type", "Data"], tablefmt="grid"))
         
         if "Authorization Violation" in err and not self.__auth_err_logged:
             data = [
@@ -97,4 +113,15 @@ class ErrorLogging:
 
     def clear(self):
         self.__auth_err_logged = False
-                
+
+
+class Logging:
+    def __init__(self, debug=False):
+        if isinstance(debug, bool):
+            self._debug = debug
+        else:
+            self._debug = False
+
+    def log(self, *msg):
+        if self._debug:
+            print(*msg)

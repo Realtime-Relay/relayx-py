@@ -63,19 +63,80 @@ class TestRealTime:
             "secret": "<KEY>"
         })
 
-        rt.init(staging=False, opts={})
+        # Test with explicit staging and opts
+        rt.init({
+            "staging": False,
+            "opts": {}
+        })
 
         assert rt.staging == False
         assert rt.opts == {}
 
-        rt.init(staging=False, opts={
-            "debug": True
+        # Test with debug flag
+        rt.init({
+            "staging": False,
+            "opts": {
+                "debug": True
+            }
         })
 
         assert rt.staging == False
         assert rt.opts == {
             "debug": True
         }
+
+        # Test default values when staging is not provided
+        rt.init({
+            "opts": {
+                "debug": False
+            }
+        })
+
+        assert rt.staging == False  # Should default to False
+        assert rt.opts == {
+            "debug": False
+        }
+
+        # Test default values when opts is not provided
+        rt.init({
+            "staging": True
+        })
+
+        assert rt.staging == True
+        assert rt.opts == {}  # Should default to {}
+
+        # Test with neither staging nor opts provided
+        rt.init({})
+
+        assert rt.staging == False  # Should default to False
+        assert rt.opts == {}  # Should default to {}
+
+        # Test opts validation - must be a dict (when truthy)
+        with pytest.raises(ValueError, match=r"\$init not object"):
+            rt.init({
+                "staging": True,
+                "opts": "not a dict"
+            })
+
+        with pytest.raises(ValueError, match=r"\$init not object"):
+            rt.init({
+                "staging": True,
+                "opts": 123
+            })
+
+        with pytest.raises(ValueError, match=r"\$init not object"):
+            rt.init({
+                "staging": True,
+                "opts": [1, 2, 3]  # Non-empty list to trigger validation
+            })
+
+        # Empty list is falsy and won't trigger validation
+        # This is current implementation behavior
+        rt.init({
+            "staging": True,
+            "opts": []
+        })
+        assert rt.opts == []
     
     @pytest.mark.asyncio
     async def test_publish_offline(self):
@@ -83,8 +144,11 @@ class TestRealTime:
             "api_key": os.getenv("api_key", None),
             "secret": os.getenv("secret", None)
         })
-        self.realtime.init(staging=False, opts={
-            "debug": True
+        self.realtime.init({
+            "staging": False,
+            "opts": {
+                "debug": True
+            }
         })
 
         res = await self.realtime.publish("hello", [
@@ -100,8 +164,11 @@ class TestRealTime:
             "secret": os.getenv("secret", None)
         })
 
-        realtime.init(staging=True, opts={
-            "debug": True
+        realtime.init({
+            "staging": True,
+            "opts": {
+                "debug": True
+            }
         })
 
         async def generic_handler(data):
@@ -150,8 +217,11 @@ class TestRealTime:
             "secret": os.getenv("secret", None)
         })
 
-        realtime.init(staging=True, opts={
-            "debug": True
+        realtime.init({
+            "staging": True,
+            "opts": {
+                "debug": True
+            }
         })
 
         with pytest.raises(ValueError):
@@ -178,8 +248,11 @@ class TestRealTime:
             "secret": os.getenv("secret", None)
         })
 
-        realtime.init(staging=True, opts={
-            "debug": True
+        realtime.init({
+            "staging": True,
+            "opts": {
+                "debug": True
+            }
         })
 
         async def generic_handler(data):

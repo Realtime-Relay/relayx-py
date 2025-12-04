@@ -20,6 +20,7 @@ import os
 import re
 from relayx_py.queue import Queue
 from relayx_py.utils import ErrorLogging
+from relayx_py.kv_storage import KVStore
 
 class Realtime:
     __event_func = {}
@@ -43,6 +44,8 @@ class Realtime:
     __jsManager = None
     __consumerMap = {}
     __consumer = None
+
+    __kv_store = None
 
     __reconnected = False
     __disconnected = True
@@ -101,20 +104,27 @@ class Realtime:
         self.quit_event = asyncio.Event()
         
 
-    def init(self, staging=False, opts=None):
+    def init(self, config):
         """
         Initializes library with configuration options.
         """
 
-        self.staging = staging
-        self.opts = opts
+        try:
+            self.staging = config["staging"]
+        except:
+            self.staging = False
+        
+        try:
+            self.opts = config["opts"]
+        except:
+            self.opts = {}
 
-        if opts:
-            if type(opts) is not dict:
+        if self.opts:
+            if type(self.opts) is not dict:
                 raise ValueError("$init not object => {}")
             
-            if "debug" in opts:
-                self.__debug = opts["debug"]
+            if "debug" in self.opts:
+                self.__debug = self.opts["debug"]
             else:
                 self.__debug = False
         else:
@@ -130,7 +140,7 @@ class Realtime:
                 "nats://0.0.0.0:4221",
                 "nats://0.0.0.0:4222",
                 "nats://0.0.0.0:4223"
-            ] if staging else [
+            ] if self.staging else [
                 "tls://api.relay-x.io:4221",
                 "tls://api.relay-x.io:4222",
                 "tls://api.relay-x.io:4223"
@@ -286,11 +296,20 @@ class Realtime:
     async def __on_error(self, e):
         self.__log(e)
 
-        is_subscribe = "consumer.create." in str(e)
+        fOp = ""
 
+        if "direct.get.kv_" in str(e) or f"consumer.create.kv_{self.__namespace}" in str(e):
+            fOp = "kv_read"
+        elif "consumer.create." in str(e):
+            fOp = "subscribe"
+        elif f"\"$kv.{self.__namespace}." in str(e):
+            fOp = "kv_write"
+        else:
+            fOp = "publish"
+        
         self.__error_logging.log_error({
                     "err": e,
-                    "op": "subscribe" if is_subscribe else "publish"
+                    "op": fOp
                 })
 
         # Reconnecting error catch
@@ -688,6 +707,23 @@ class Realtime:
         initResult = await queue_obj.initialize(queue_id)
 
         return queue_obj if initResult else None
+
+
+    # Key Value
+    async def init_kv_store(self):
+        if self.__kv_store is None:
+            self.__kv_store = KVStore({
+                "namespace": self.__namespace,
+                "jetstream": self.__jetstream,
+                "debug": self.__debug
+            })
+
+            init = await self.__kv_store.init()
+
+            return self.__kv_store if init else None
+        else:
+            return self.__kv_store
+
 
     def status(self):
         return self.__connection_status

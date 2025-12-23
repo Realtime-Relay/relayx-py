@@ -56,7 +56,7 @@ class ErrorLogging:
                     ["Event", "Publish Permissions Violation"],
                     ["Description", f"User is not permitted to publish on '{topic}'"],
                     ["Topic", topic],
-                    ["Docs to Solve Issue", "<>"]
+                    ["Docs to Solve Issue", "https://docs.relay-x.io/docs/setup/api_key_permissions#messaging--publish-permissions"]
                 ]
 
                 print(tabulate.tabulate(data, ["Type", "Data"], tablefmt="grid"))
@@ -79,7 +79,7 @@ class ErrorLogging:
                     ["Event", "Subscription Permissions Violation"],
                     ["Description", f"User is not permitted to subscribe on '{topic}'"],
                     ["Topic", topic],
-                    ["Docs to Solve Issue", "<>"]
+                    ["Docs to Solve Issue", "https://docs.relay-x.io/docs/setup/api_key_permissions#messaging--subscribe-permissions"]
                 ]
 
                 print(tabulate.tabulate(data, ["Type", "Data"], tablefmt="grid"))
@@ -87,7 +87,7 @@ class ErrorLogging:
                 data = [
                     ["Event", "KV Read Failure"],
                     ["Description", f"User is not permitted to read from KV Store"],
-                    ["Docs to Solve Issue", "<>"]
+                    ["Docs to Solve Issue", "https://docs.relay-x.io/docs/setup/api_key_permissions#read-permission"]
                 ]
 
                 print(tabulate.tabulate(data, ["Type", "Data"], tablefmt="grid"))
@@ -95,7 +95,7 @@ class ErrorLogging:
                 data = [
                     ["Event", "KV Write / Delete Failure"],
                     ["Description", f"User is not permitted to write / delete to KV Store"],
-                    ["Docs to Solve Issue", "<>"]
+                    ["Docs to Solve Issue", "https://docs.relay-x.io/docs/setup/api_key_permissions#write-permission"]
                 ]
 
                 print(tabulate.tabulate(data, ["Type", "Data"], tablefmt="grid"))
@@ -104,7 +104,7 @@ class ErrorLogging:
             data = [
                 ["Event", "Authentication Failure"],
                 ["Description", "User failed to authenticate. Check if API key exists & if it is enabled"],
-                ["Docs to Solve Issue", "<>"]
+                ["Docs to Solve Issue", "https://docs.relay-x.io/docs/setup/api_key_permissions#enabling-and-disabling-keys"]
             ]
 
             print(tabulate.tabulate(data, ["Type", "Data"], tablefmt="grid"))

@@ -121,6 +121,7 @@ async def onConnect(status):
         elif text == "delete_consumer":
             name = await loop.run_in_executor(None, input, "Enter Consumer Name: ")
             del_result = await queue.delete_consumer(name)
+            
 
             print(del_result)
         elif text == "detatch":

@@ -7,6 +7,7 @@ import nats
 from nats.aio.client import RawCredentials
 from concurrent.futures import ThreadPoolExecutor
 import nats.js.api as nats_config
+from nats.js.errors import ServiceUnavailableError
 import json
 import re
 import inspect
@@ -17,6 +18,9 @@ import socket
 from functools import wraps
 import os
 import re
+from relayx_py.queue import Queue
+from relayx_py.utils import ErrorLogging
+from relayx_py.kv_storage import KVStore
 
 class Realtime:
     __event_func = {}
@@ -41,12 +45,16 @@ class Realtime:
     __consumerMap = {}
     __consumer = None
 
+    __kv_store = None
+
     __reconnected = False
     __disconnected = True
     __reconnecting = False
     __connected = False
     __reconnected_attempt = False
     __manual_disconnect = False
+
+    __auth_err_logged = False
 
     __offline_message_buffer = []
 
@@ -89,25 +97,34 @@ class Realtime:
         self.__namespace = ""
         self.__topicHash = ""
 
+        self.__error_logging = ErrorLogging()
+
         self._pool = ThreadPoolExecutor(max_workers=1000)
 
         self.quit_event = asyncio.Event()
         
 
-    def init(self, staging=False, opts=None):
+    def init(self, config):
         """
         Initializes library with configuration options.
         """
 
-        self.staging = staging
-        self.opts = opts
+        try:
+            self.staging = config["staging"]
+        except:
+            self.staging = False
+        
+        try:
+            self.opts = config["opts"]
+        except:
+            self.opts = {}
 
-        if opts:
-            if type(opts) is not dict:
+        if self.opts:
+            if type(self.opts) is not dict:
                 raise ValueError("$init not object => {}")
             
-            if "debug" in opts:
-                self.__debug = opts["debug"]
+            if "debug" in self.opts:
+                self.__debug = self.opts["debug"]
             else:
                 self.__debug = False
         else:
@@ -123,7 +140,7 @@ class Realtime:
                 "nats://0.0.0.0:4221",
                 "nats://0.0.0.0:4222",
                 "nats://0.0.0.0:4223"
-            ] if staging else [
+            ] if self.staging else [
                 "tls://api.relay-x.io:4221",
                 "tls://api.relay-x.io:4222",
                 "tls://api.relay-x.io:4223"
@@ -159,7 +176,8 @@ class Realtime:
                 raise ValueError("Namespace not found")
         else:
             raise ValueError("Namespace not found")
-        
+
+
     async def __push_latency(self, data):
         """
         Gets the __namespace of the user using a service
@@ -194,6 +212,7 @@ class Realtime:
         
         self.__is_sending_latency = False
 
+
     async def connect(self):
         if self.__connect_called:
             return
@@ -215,6 +234,9 @@ class Realtime:
 
             self.__natsClient = await nats.connect(**options)
             self.__jetstream = self.__natsClient.jetstream()
+
+            self.__connection_status = "CONNECTED"
+
             self.__log("Connected to Relay!")
 
             self.__connected = True
@@ -228,14 +250,18 @@ class Realtime:
             # Call the callback function if present
             if self.CONNECTED in self.__event_func:
                 if self.__event_func[self.CONNECTED]:
-                    self.__execute_topic_callback(self.CONNECTED, None)
+                    self.__execute_topic_callback(self.CONNECTED, True)
 
             await self.quit_event.wait()
 
         await self.__run_in_background(__connect)
 
+
     async def __on_disconnect(self):
         self.__log("Disconnected from server")
+
+        self.__connection_status = "DISCONNECTED"
+
         self.__disconnected = True
         self.__connected = False
         self.__disconnect_time = datetime.now(timezone.utc).isoformat()
@@ -248,10 +274,13 @@ class Realtime:
             else:
                 self.__on_reconnect_attempt()
 
+
     async def __on_reconnect(self):
         self.__log("Reconnected!")
         self.__reconnecting = False
         self.__connected = True
+
+        self.__connection_status = "RECONNECTED"
 
         if self.RECONNECT in self.__event_func:
             self.__execute_topic_callback(self.RECONNECT, self.__RECONNECTED)
@@ -263,16 +292,42 @@ class Realtime:
         # Publish messages issued when client was in reconnection state
         await self.__publish_messages_on_reconnect()
 
+
     async def __on_error(self, e):
-        self.__log(f"There was an error: {e}")
+        self.__log(e)
+
+        fOp = ""
+
+        if "direct.get.kv_" in str(e) or f"consumer.create.kv_{self.__namespace}" in str(e):
+            fOp = "kv_read"
+        elif "consumer.create." in str(e):
+            fOp = "subscribe"
+        elif f"\"$kv.{self.__namespace}." in str(e):
+            fOp = "kv_write"
+        else:
+            fOp = "publish"
+        
+        self.__error_logging.log_error({
+                    "err": e,
+                    "op": fOp
+                })
 
         # Reconnecting error catch
         if str(e) == "":
             if self.RECONNECT in self.__event_func:
                 self.__execute_topic_callback(self.RECONNECT, self.__RECONNECTING)
+        elif str(e) == "Authorization Violation" and not self.__auth_err_logged:
+            self.__auth_err_logged = True
+
+            if self.CONNECTED in self.__event_func:
+                if self.__event_func[self.CONNECTED]:
+                    self.__execute_topic_callback(self.CONNECTED, False)
+
 
     async def __on_closed(self):
         self.__log("Connection is closed")
+
+        self.__connection_status = "CLOSED"
 
         self.__offline_message_buffer.clear()
         self.__disconnect_time = None
@@ -281,11 +336,16 @@ class Realtime:
         self.__reconnecting = False
         self.__connect_called = False
 
+        self.__error_logging.clear()
+
         if self.DISCONNECTED in self.__event_func:
             self.__execute_topic_callback(self.DISCONNECTED, None)
 
+
     async def __on_reconnect_attempt(self):
         self.__log(f"Reconnection attempt underway...")
+
+        self.__connection_status = "RECONNECTING"
 
         self.__connected = False
         self.__reconnected_attempt = True
@@ -293,6 +353,7 @@ class Realtime:
 
         if self.RECONNECT in self.__event_func:
             self.__execute_topic_callback(self.RECONNECT, self.__RECONNECTING)
+
 
     async def close(self):
         """
@@ -315,6 +376,7 @@ class Realtime:
 
             self.__log("None / null socket object, cannot close connection")
 
+
     async def publish(self, topic, data):
         if topic == None:
             raise ValueError("$topic cannot be None.")
@@ -330,11 +392,12 @@ class Realtime:
         
         self.is_message_valid(data)
 
+        start = datetime.now(timezone.utc).timestamp()
+
         if self.__connected:
             message_id = str(uuid.uuid4())
 
             message = {
-                "client_id": self.__get_client_id(),
                 "id": message_id,
                 "room": topic,
                 "message": data,
@@ -350,9 +413,21 @@ class Realtime:
 
             topic = self.__get_stream_topic(topic)
             self.__log(f"Publishing to topic => {self.__get_stream_topic(topic)}")
-            
-            ack = await self.__jetstream.publish(topic, encoded)
-            self.__log(f"Publish ack => {ack}")
+
+            ack = None
+
+            try:
+                ack = await self.__jetstream.publish(topic, encoded)
+                self.__log("Publish Ack =>")
+                self.__log(ack)
+
+                latency = (datetime.now(timezone.utc).timestamp() * 1000) - start
+                self.__log(f"Latency => {latency} ms")
+            except ServiceUnavailableError as err:
+                self.__error_logging.log_error({
+                    "err": err,
+                    "op": "publish"
+                })
 
             return ack != None
         else:
@@ -362,6 +437,7 @@ class Realtime:
             })
 
             return False
+
 
     async def on(self, topic, func):
         """
@@ -403,6 +479,7 @@ class Realtime:
     
         return True  
 
+
     async def off(self, topic):
         """
         Unregisters a callback function for a given topic or event.
@@ -430,6 +507,7 @@ class Realtime:
             return True
         else:
             return False
+
 
     async def history(self, topic, start=None, end=None):
         if topic == None:
@@ -504,15 +582,18 @@ class Realtime:
         
         return history
 
+
     async def __delete_consumer(self):
         if self.__consumer:
             await self.__consumer.unsubscribe()
 
         return True
 
+
     async def __subscribe_to_topics(self):
         if len(self.__topic_map) > 0:
             await self.__start_consumer()
+
 
     async def __start_consumer(self):
         if self.__consumer is not None:
@@ -528,15 +609,14 @@ class Realtime:
 
             topic = self.__strip_stream_hash(msg.subject)
 
-            if data["client_id"] != self.__get_client_id():
-                topics = self.get_callback_topics(topic)
+            topics = self.get_callback_topics(topic)
 
-                for top in topics:
-                    self.__execute_topic_callback(top, {
-                            "id": data["id"],
-                            "topic": topic,
-                            "data": data["message"]
-                        })
+            for top in topics:
+                self.__execute_topic_callback(top, {
+                        "id": data["id"],
+                        "topic": topic,
+                        "data": data["message"]
+                    })
             
             self.__log(f"Message processed for topic: {topic}")
             await self.__log_latency(now, data)
@@ -555,6 +635,7 @@ class Realtime:
                                                     ))
 
         self.__log("Consumer is consuming")
+
 
     async def __log_latency(self, now, data):
         """
@@ -587,6 +668,7 @@ class Realtime:
                 "history": self.__latency.copy()
             })
 
+
     async def __delayed_latency_push(self, time_zone):
         await asyncio.sleep(30)
         self.__log("setTimeout called")
@@ -601,6 +683,50 @@ class Realtime:
             self.__log("No latency data to push")
 
         self.__latency_push_task = None
+
+
+    # Queue
+    async def init_queue(self, queue_id):
+        if not self.__connected:
+            self.__log("Not connected to relayX network. Skipping queue init")
+
+            return None
+
+        self.__log("Validating queue ID...")
+        if queue_id == None or queue_id == "":
+            raise ValueError("$queue_id cannot be None or empty")
+        
+        queue_obj = Queue({
+            "jetstream": self.__jetstream,
+            "nats_client": self.__natsClient,
+            "api_key": self.api_key,
+            "debug": self.__debug,
+            "realtime": self
+        })
+
+        initResult = await queue_obj.initialize(queue_id)
+
+        return queue_obj if initResult else None
+
+
+    # Key Value
+    async def init_kv_store(self):
+        if self.__kv_store is None:
+            self.__kv_store = KVStore({
+                "namespace": self.__namespace,
+                "jetstream": self.__jetstream,
+                "debug": self.__debug
+            })
+
+            init = await self.__kv_store.init()
+
+            return self.__kv_store if init else None
+        else:
+            return self.__kv_store
+
+
+    def status(self):
+        return self.__connection_status
 
     # Utility functions
     def is_topic_valid(self, topic):
@@ -622,10 +748,12 @@ class Realtime:
             return array_check and space_star_check
         else:
             return False
-        
+
+
     def __get_client_id(self):
         return self.__natsClient.client_id
-    
+
+
     def __retry_till_success(self, func, retries, delay, *args):
         method_output = None
         success = False
@@ -651,6 +779,7 @@ class Realtime:
     
         return method_output
 
+
     async def __publish_messages_on_reconnect(self):
         message_sent_status = []
 
@@ -668,23 +797,28 @@ class Realtime:
         if len(message_sent_status) > 0:
             if self.MESSAGE_RESEND in self.__event_func:
                 self.__execute_topic_callback(self.MESSAGE_RESEND, output)
-    
+
+
     def encode_json(self, data):
         return json.dumps(data).encode('utf-8')
-    
+
+
     def __get_stream_name(self):
         if self.__namespace:
             return f"{self.__namespace}_stream"
         else:
             self.close()
             raise ValueError("$namespace is None, Cannot initialize program with None $namespace")
-    
+
+
     def __get_stream_topic(self, topic):
         return f"{self.__topicHash}.{topic}"
+
 
     async def __run_in_background(self, func):
         task = asyncio.create_task(func())
         await task
+
 
     def __encode_json(self, data):
         try:
@@ -692,9 +826,11 @@ class Realtime:
         except Exception as e:
             raise ValueError(f"Error encoding JSON: {e}")
 
+
     def __log(self, msg):
         if self.__debug:
             print(msg)  # Replace with a logging system if necessary
+
 
     def is_message_valid(self, msg):
         if msg == None:
@@ -711,9 +847,10 @@ class Realtime:
         
         return False
 
+
     def get_callback_topics(self, topic):
         """
-        Return all subscription‑patterns (callbacks) that match a concrete topic,
+        Return all subscription-patterns (callbacks) that match a concrete topic,
         excluding the five control events.
 
         Parameters
@@ -748,9 +885,10 @@ class Realtime:
 
         return valid_topics
 
+
     def topic_pattern_matcher(self, pattern_a, pattern_b):
         """
-        Return True when two NATS‑style subject patterns could match
+        Return True when two NATS-style subject patterns could match
         the same concrete subject.
 
         Rules
@@ -772,14 +910,7 @@ class Realtime:
             tok_a = a[i] if i < len(a) else None
             tok_b = b[j] if j < len(b) else None
 
-            # Literal match or single‑token wildcard on either side
-            single = (tok_a == "*" and j < len(b)) or (tok_b == "*" and i < len(a))
-            if (tok_a is not None and tok_a == tok_b) or single:
-                i += 1
-                j += 1
-                continue
-
-            # Handle '>' in pattern‑A
+            # Handle '>' in pattern‑A (check before wildcard matching)
             if tok_a == ">":
                 if i != len(a) - 1 or j >= len(b):      # must be final & eat ≥1 token
                     return False
@@ -788,7 +919,7 @@ class Realtime:
                 star_a_j = j         # remember where to start back‑tracking
                 continue
 
-            # Handle '>' in pattern‑B
+            # Handle '>' in pattern‑B (check before wildcard matching)
             if tok_b == ">":
                 if j != len(b) - 1 or i >= len(a):
                     return False
@@ -797,26 +928,35 @@ class Realtime:
                 star_b_j = i
                 continue
 
+            # Literal match or single‑token wildcard on either side
+            single = (tok_a == "*" and j < len(b)) or (tok_b == "*" and i < len(a))
+            if (tok_a is not None and tok_a == tok_b) or single:
+                i += 1
+                j += 1
+                continue
+
             # Back‑track using the most recent '>' in A
             if star_a_j != -1 and star_a_j <= len(b):
                 j = star_a_j
-                star_a_j += 1        # make A’s '>' absorb one more B‑token
+                star_a_j += 1        # make A's '>' absorb one more B‑token
                 continue
 
             # Back‑track using the most recent '>' in B
             if star_b_j != -1 and star_b_j <= len(a):
                 i = star_b_j
-                star_b_j += 1        # make B’s '>' absorb one more A‑token
+                star_b_j += 1        # make B's '>' absorb one more A‑token
                 continue
 
             return False             # dead‑end
 
         return True
 
+
     def __strip_stream_hash(self, topic):
         return topic.replace(f"{self.__topicHash}.", "")
 
-    def  __execute_topic_callback(self, topic, data):
+
+    def __execute_topic_callback(self, topic, data):
         handler = self.__event_func[topic]
 
         if inspect.iscoroutinefunction(handler):
@@ -839,8 +979,10 @@ class Realtime:
                     handler
                 )
 
+
     def sleep(self, seconds):
         time.sleep(seconds)
+
 
     def __getCreds(self):
         # To prevent \r\n from windows
@@ -863,6 +1005,7 @@ NKEYs are sensitive and should be treated as secrets.
 *************************************************************
 """.strip()
     
+
     def __initDNSSpoof(self):
         self.__log("Init DNS Spoofing")
         _real_getaddrinfo = socket.getaddrinfo
